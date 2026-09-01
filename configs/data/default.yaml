@@ -1,22 +1,32 @@
 # 데이터 전처리 / 윈도잉 설정
-raw_path: data/raw/lp_data.xlsx
-interim_path: data/interim/lp_clean.parquet
+raw_dir: data/raw/            # 계량기별 xlsx 파일들이 있는 디렉토리
 processed_dir: data/processed
 
-datetime_col: "일자/시간"
+datetime_col: "일자시간"
 
-# 모델 입력으로 사용할 다변량 시계열 컬럼 (예시: LP 수전 데이터)
+# 모델 입력 채널 (수전 4채널)
 feature_cols:
-  - "유효전력량"
-  - "지상무효전력량"
-  - "진상무효전력량"
-  - "피상전력량"
+  - "수전_유효전력량"
+  - "수전_지상무효전력량"
+  - "수전_진상무효전력량"
+  - "수전_피상전력량"
 
-resample_freq: "15min"      # 원본이 15분 간격 LP 데이터라 가정
+# 송전 채널 (비-zero 여부 검사용 — 값 존재 시 채널 포함 여부 논의)
+송전_feature_cols:
+  - "송전_유효전력량"
+  - "송전_지상무효전력량"
+  - "송전_진상무효전력량"
+  - "송전_피상전력량"
+
+resample_freq: "15min"      # 원본 LP 데이터 간격
 fill_method: "linear"        # 결측치 보간 방법
 
+# gap 기반 segment 분리
+gap_threshold_hours: 6.0    # 이 시간 이상 공백이면 별도 segment로 분리
+                              # (segment 내 짧은 결측만 보간, 주간 공백 오염 방지)
+
 window_size: 96               # 96 * 15min = 24시간
-stride: 1                       # sliding window stride
+stride: 1                     # sliding window stride
 train_val_test_split: [0.7, 0.15, 0.15]
 
-scaler: "standard"               # standard | minmax, 채널별 fit
+scaler: "standard"            # standard | minmax, 채널별 fit

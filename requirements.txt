@@ -5,5 +5,7 @@ scikit-learn
 pyyaml
 tqdm
 tensorboard
-openpyxl        # LP 데이터가 엑셀(xlsx)로 제공되는 경우 로딩용
+openpyxl        # LP data loader (real xlsx)
+lxml            # HTML-disguised .xls parsing via pd.read_html
+xlrd            # OLE2 binary .xls (Excel 97-2003) parsing
 matplotlib

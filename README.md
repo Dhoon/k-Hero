@@ -19,13 +19,15 @@ campus-power-ad/
 ├── configs/                 # 실험 설정 (yaml)
 │   ├── data/                #   전처리/윈도잉 설정
 │   ├── pretrain/             #   SSL 사전학습 설정
-│   └── finetune/             #   이상탐지 파인튜닝 설정
+│   ├── finetune/             #   이상탐지 파인튜닝 설정
+│   └── eval/                  #   합성 이상치 주입(검증용) 설정
 ├── data/
 │   ├── raw/                 # 원본 엑셀/CSV (건드리지 않음)
 │   ├── interim/              # 결측치 처리·리샘플링 등 중간 산출물
 │   └── processed/            # 윈도우화된 텐서 (npy/parquet), train/val/test split
+│       └── synthetic_eval/     # 합성 이상치 주입 결과물 (레이블 있는 검증셋)
 ├── src/adt/                  # 패키지 소스
-│   ├── data/                 # 로딩, 전처리, 윈도잉, 스케일링, Dataset/DataLoader
+│   ├── data/                 # 로딩, 전처리, 윈도잉, 스케일링, Dataset/DataLoader, 합성 이상치 주입
 │   ├── models/                # Transformer 인코더(backbone), SSL head, 이상탐지 head
 │   ├── ssl/                   # 마스킹 전략, SSL 손실함수
 │   ├── engine/                 # 학습/평가 루프 (pretrain, finetune, evaluate)
@@ -43,6 +45,17 @@ campus-power-ad/
 └── tests/                         # 유닛 테스트
 ```
 
+## 데이터 관리 정책
+- `data/raw/`, `data/interim/`, `data/processed/`(합성 이상치 검증셋 포함)의 실제 파일들은 **git에 올리지 않습니다** (`.gitignore`에서 제외, 폴더 구조 유지용 `.gitkeep`만 추적).
+- 원본 xls/csv는 로컬 또는 팀 공유 드라이브에만 보관하고, 새 컴퓨터에서 이 저장소를 clone한 뒤에는 `data/raw/`에 원본 파일을 직접 복사해 넣어서 씁니다.
+- git에는 **코드 + 설정(configs/*.yaml) + 문서**만 버전관리합니다. 체크포인트(`checkpoints/**/*.pt`)도 같은 이유로 제외되어 있습니다.
+
+## 검증 방법 (레이블 없는 데이터)
+실측 고장/이상 레이블이 없기 때문에, `configs/eval/synthetic.yaml` 설정으로 정상 데이터(test split)에
+spike/drop/flatline/drift/trend_break 같은 합성 이상치를 인위적으로 주입해 레이블 있는 검증셋을 만듭니다.
+이 주입 위치를 정답으로 삼아 auroc/auprc/f1/precision_at_k 등을 계산하고, "이 정도 편차는 최소한 잡아내는지"를 확인합니다.
+실제 이상치와 완전히 같지는 않은 프록시(proxy) 검증이라는 점은 감안해야 합니다.
+
 ## 워크플로우
 
 ```bash
@@ -56,10 +69,13 @@ python scripts/pretrain.py --config configs/pretrain/default.yaml
 python scripts/finetune.py --config configs/finetune/default.yaml \
     --encoder-ckpt checkpoints/pretrain/best.pt
 
-# 4) 평가
+# 4) 합성 이상치 주입 (레이블 없는 데이터의 정량 검증용 셋 생성)
+python scripts/inject_synthetic_anomalies.py --config configs/eval/synthetic.yaml
+
+# 5) 평가 (합성 검증셋 기준 auroc/auprc/f1/precision_at_k)
 python scripts/evaluate.py --ckpt checkpoints/finetune/best.pt
 
-# 5) 새 데이터에 대한 추론 (이상 점수 산출)
+# 6) 새 데이터에 대한 추론 (이상 점수 산출)
 python scripts/infer.py --ckpt checkpoints/finetune/best.pt --input data/raw/new_lp.xlsx
 ```
 

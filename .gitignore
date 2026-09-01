@@ -7,6 +7,9 @@ data/processed/*
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+!data/processed/synthetic_eval/
+data/processed/synthetic_eval/*
+!data/processed/synthetic_eval/.gitkeep
 checkpoints/**/*.pt
 logs/*
 outputs/figures/*

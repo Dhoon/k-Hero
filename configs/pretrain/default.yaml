@@ -10,8 +10,14 @@ model:
 
 ssl:
   strategy: "masked_reconstruction"   # masked_reconstruction | contrastive
-  mask_ratio: 0.4
-  mask_mode: "segment"                 # random | segment | channel
+  mask_mode: "mixed"                   # segment | channel | mixed
+  segment_prob: 0.7                    # mixed 모드에서 segment 방식 선택 확률 (나머지는 channel)
+
+  # Curriculum mask ratio: epoch 진행에 따라 start → end 선형 증가
+  # pretrain_methodology.md §1: 처음엔 쉬운 과제로 시작해 점점 어렵게
+  mask_ratio_start: 0.15
+  mask_ratio_end: 0.40
+  curriculum_epochs: 50               # 이 epoch까지 선형 증가, 이후 end 고정
 
 train:
   epochs: 100
