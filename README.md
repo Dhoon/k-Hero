@@ -1,6 +1,6 @@
 # Campus Power LP Anomaly Detection (Transformer + SSL Pretraining)
 
-교내 수전/LP(Load Profile) 전력 데이터를 이용해 Transformer 기반 이상탐지를 수행하는 프로젝트입니다.
+수전/LP(Load Profile) 전력 데이터를 이용해 Transformer 기반 이상탐지를 수행하는 프로젝트입니다.
 2단계로 구성됩니다.
 
 1. **Self-supervised pretraining** (`src/adt/ssl`, `scripts/pretrain.py`)
