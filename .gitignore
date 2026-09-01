@@ -10,8 +10,4 @@ data/processed/*
 !data/processed/synthetic_eval/
 data/processed/synthetic_eval/*
 !data/processed/synthetic_eval/.gitkeep
-checkpoints/**/*.pt
-logs/*
-outputs/figures/*
-outputs/scores/*
 .env
