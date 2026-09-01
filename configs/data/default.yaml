@@ -1,0 +1,22 @@
+# 데이터 전처리 / 윈도잉 설정
+raw_path: data/raw/lp_data.xlsx
+interim_path: data/interim/lp_clean.parquet
+processed_dir: data/processed
+
+datetime_col: "일자/시간"
+
+# 모델 입력으로 사용할 다변량 시계열 컬럼 (예시: LP 수전 데이터)
+feature_cols:
+  - "유효전력량"
+  - "지상무효전력량"
+  - "진상무효전력량"
+  - "피상전력량"
+
+resample_freq: "15min"      # 원본이 15분 간격 LP 데이터라 가정
+fill_method: "linear"        # 결측치 보간 방법
+
+window_size: 96               # 96 * 15min = 24시간
+stride: 1                       # sliding window stride
+train_val_test_split: [0.7, 0.15, 0.15]
+
+scaler: "standard"               # standard | minmax, 채널별 fit

@@ -1,0 +1,21 @@
+# 이상탐지 파인튜닝 설정
+data_config: configs/data/default.yaml
+encoder_ckpt: checkpoints/pretrain/best.pt
+
+freeze_encoder: false     # true면 encoder 고정, head만 학습
+
+head:
+  type: "reconstruction"   # reconstruction | classification
+  threshold_method: "percentile"   # percentile | k_sigma
+  threshold_value: 99.0
+
+train:
+  epochs: 50
+  batch_size: 128
+  lr: 5.0e-4
+  weight_decay: 1.0e-5
+  ckpt_dir: checkpoints/finetune
+  log_dir: logs/finetune
+
+eval:
+  metrics: ["auroc", "auprc", "f1", "precision_at_k"]
