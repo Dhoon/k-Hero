@@ -3,7 +3,6 @@
 ReconstructionAnomalyHead:
   encoder 출력 (B, T, d_model) → Linear(d_model → n_features) → (B, T, n_features)
   masking 없이 전체 window를 복원하고, 복원 오차를 이상 점수로 사용한다.
-  pretrain_head.MaskedReconstructionHead와 동일한 구조이므로 warm start 가능.
 """
 from __future__ import annotations
 
@@ -53,3 +52,7 @@ class ReconstructionAnomalyHead(nn.Module):
         except RuntimeError:
             pass  # shape 불일치 → xavier init 유지
         return instance
+
+
+# pretrain_head.py의 MaskedReconstructionHead와 구조가 동일하므로 alias로 통합
+MaskedReconstructionHead = ReconstructionAnomalyHead
