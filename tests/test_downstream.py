@@ -175,6 +175,31 @@ class TestEncoderFreeze:
         for p in enc.parameters():
             assert not p.requires_grad, "All encoder params should be frozen"
 
+    def test_missing_ckpt_raises_by_default(self, tmp_path):
+        """checkpoint 경로가 존재하지 않으면 기본값(allow_random_init=False)에서 에러."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=256
+        )
+        with pytest.raises(FileNotFoundError):
+            load_encoder_frozen(tmp_path / "nonexistent.pt", enc)
+
+    def test_none_ckpt_raises_by_default(self):
+        """ckpt_path=None이면 기본값(allow_random_init=False)에서 에러."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=256
+        )
+        with pytest.raises(FileNotFoundError):
+            load_encoder_frozen(None, enc)
+
+    def test_allow_random_init_skips_load(self, tmp_path):
+        """allow_random_init=True면 checkpoint 없어도 freeze만 수행."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=256
+        )
+        enc = load_encoder_frozen(None, enc, allow_random_init=True)
+        assert not enc.training
+        assert all(not p.requires_grad for p in enc.parameters())
+
     def test_encoder_params_unchanged_after_train_step(self, encoder):
         """학습 step 후 encoder 파라미터 값이 변하지 않아야 함."""
         det_head = DetectionHead(d_model=D, hidden_dim=32)
