@@ -2,12 +2,12 @@
 
 네트워크로 측정값을 전송하는 교내 전력계(power meter)의 시계열 데이터를 대상으로, 사이버 공격에 의해 변조된 측정값을 탐지하는 프로젝트입니다.
 
-Self-Supervised Learning(SSL)으로 정상 전력 시계열의 패턴을 먼저 학습한 뒤, 같은 Transformer 인코더를 공유하는 두 개의 downstream head로
+Self-Supervised Learning(SSL)으로 정상 전력 시계열의 패턴을 먼저 학습한 뒤, 같은 pretrained Transformer 인코더를 각각 가져와 두 개의 독립된 downstream 모델을 학습합니다.
 
-1. 공격 여부 판단 (Attack Detection)
-2. 공격 유형 분류 (Attack Classification)
+1. **Attack Detection** — 공격 여부 판단 (binary: Normal vs Attack)
+2. **Attack Classification** — 공격 유형 분류 (multi-class, Normal 제외)
 
-를 수행합니다.
+두 모델은 별도의 head를 가진 별도의 학습 run입니다 (encoder를 공유하며 동시에 학습하는 구조가 아닙니다).
 
 ## 데이터
 
@@ -34,11 +34,12 @@ Pretrained Transformer Encoder
         ↓
  ┌─────────────────────────────┐
  │                             │
-Attack Detection Head       Attack Classification Head
-Normal(0) / Attack(1)       5 attack types
+Attack Detection 모델        Attack Classification 모델
+(MeanPool+MaxPool→MLP→binary) (MeanPool+MaxPool→MLP→multi-class)
+Normal(0) / Attack(1)        공격 유형 (Normal 제외 샘플만 학습)
 ```
 
-Transformer Encoder는 pretrain 단계에서 먼저 학습되고, 두 downstream head가 이 encoder를 공유합니다.
+Transformer Encoder는 pretrain 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 각각 가져와 자신의 head를 새로 붙여 독립적으로 학습합니다.
 
 ## 디렉토리 구조
 
@@ -48,11 +49,11 @@ campus-power-ad/
 │   ├── data/default.yaml                 # 전처리·윈도잉 설정 (4채널)
 │   ├── pretrain/default.yaml             # masked reconstruction + forecasting joint 설정
 │   └── downstream/
-│       ├── attack_injection.yaml         # 5종 공격 주입 파라미터 + pool 생성 설정 (단일 출처)
+│       ├── attack_injection.yaml         # 5종 공격 주입 파라미터 + fold별 데이터 생성 설정
 │       ├── detection/
-│       │   └── default.yaml              # 1개 config, --held-out-type CLI 인자로 6개 fold 실행
+│       │   └── default.yaml              # 1개 config, --fold CLI 인자로 6개 fold 실행
 │       └── classification/
-│           └── known.yaml                # 5-class, 전부 사용
+│           └── default.yaml              # 1개 config, --fold CLI 인자로 6개 fold 실행
 ├── data/
 │   ├── raw/                              # 원본 xls (건드리지 않음, git 제외)
 │   ├── interim/                          # 중간 산출물 (git 제외)
@@ -61,47 +62,63 @@ campus-power-ad/
 │       ├── status_events/                # 계기별 상태정보 이벤트 분류 결과
 │       ├── pretrain/                     # 레이블 없는 정상 데이터 (forecasting target 포함)
 │       │   └── train/ val/ test/
-│       └── downstream/
-│           ├── detection/                # 타입별 pool. fold마다 새로 안 만들고 전부 여기서 조합해서 재사용
-│           │   ├── normal/               #   train/ val/ test/  (label=0)
-│           │   ├── scale_down/           #   train/ val/ test/  (label=1, 경계 포함 overlap window)
-│           │   ├── ramp/
-│           │   ├── pulse_plateau/
-│           │   ├── replay/
-│           │   └── instant_spike/
-│           └── classification/
-│               └── known/                # 5-class 레이블
-│                   (train/ val/ test/)
+│       └── downstream/                   # fold별 최종 데이터셋 (한 번 생성, 고정 시드, 재사용)
+│           ├── all_type/                 #   Normal+5종, train/val/test
+│           ├── unseen_scale_down/        #   Normal+4종(Scale Down 제외), train/val만
+│           ├── unseen_ramp/
+│           ├── unseen_pulse_plateau/
+│           ├── unseen_replay/
+│           └── unseen_instant_spike/
+│               (Detection·Classification 모델 둘 다 이 fold 데이터를 공유.
+│                Classification은 그중 Normal 제외 샘플만 사용)
 ├── src/adt/
 │   ├── data/
 │   │   ├── loaders.py, preprocessing.py, windowing.py, scalers.py, dataset.py
 │   │   ├── attack_injection.py           # 5종 공격 주입 함수 (raw scale에서 동작)
-│   │   └── labeling.py                   # known/unseen fold 데이터 오케스트레이션
+│   │   └── labeling.py                   # fold별 데이터셋(all_type/unseen_*) 생성 오케스트레이션
 │   ├── models/
 │   │   ├── encoder.py, positional_encoding.py
 │   │   └── heads/
 │   │       ├── reconstruction_head.py    # pretrain 전용, downstream에서는 제거
 │   │       ├── forecasting_head.py       # pretrain 전용, downstream에서는 제거
 │   │       ├── detection_head.py         # MeanPool+MaxPool → MLP → binary
-│   │       └── classification_head.py    # 5-class MLP
+│   │       └── classification_head.py    # MeanPool+MaxPool → MLP → multi-class
 │   ├── ssl/
 │   │   ├── masking.py                    # segment 단위 curriculum masking (15%→40%)
 │   │   └── losses.py                     # L_mask + lambda * L_forecast
 │   ├── engine/
 │   │   ├── pretrain.py
-│   │   ├── train_detection.py            # known/unseen 6개 config 공용
-│   │   ├── train_classification.py
+│   │   ├── train_detection.py            # all_type/unseen 6개 fold 공용
+│   │   ├── train_classification.py       # all_type/unseen 6개 fold 공용
 │   │   ├── evaluate_detection.py
 │   │   └── evaluate_classification.py
 │   ├── utils/                            # seed, logger, checkpoint, metrics
 │   └── inference/detect.py
 ├── scripts/                              # CLI 진입점 (각 engine 함수 호출)
 ├── notebooks/                            # 탐색적 데이터분석
+├── docs/
+│   └── pretrain_methodology.md           # 방법론 문서 (이 프로젝트의 최종 설계 기준)
 ├── checkpoints/
 │   ├── pretrain/
 │   └── downstream/
-│       ├── detection/{known, unseen_scale_down, unseen_ramp, unseen_pulse_plateau, unseen_replay, unseen_instant_spike}/
-│       └── classification/known/
+│       ├── all_type/
+│       │   ├── detector/                 # Attack Detection 모델
+│       │   └── classifier/               # Attack Classification 모델
+│       ├── unseen_scale_down/
+│       │   ├── detector/
+│       │   └── classifier/
+│       ├── unseen_ramp/
+│       │   ├── detector/
+│       │   └── classifier/
+│       ├── unseen_pulse_plateau/
+│       │   ├── detector/
+│       │   └── classifier/
+│       ├── unseen_replay/
+│       │   ├── detector/
+│       │   └── classifier/
+│       └── unseen_instant_spike/
+│           ├── detector/
+│           └── classifier/
 ├── logs/                                 # checkpoints와 동일 구조
 ├── outputs/
 │   ├── figures/                          # checkpoints와 동일 구조
@@ -127,22 +144,23 @@ Pretraining이 끝나면 Reconstruction Head와 Forecasting Head는 버리고, T
 
 ## 평가 방법
 
-**Known-Attack Evaluation**: 5종 공격을 모두 train/test에 사용해 Attack Detection(Normal vs Attack), Attack Classification(5-class) 성능을 확인합니다. 이미 알고 있는 패턴을 잘 맞추는지 보는 sanity check 성격이며, 미지의 공격에 대한 일반화를 보장하지 않습니다.
+**All-Type Evaluation**: 5종 공격을 모두 train/val/test에 사용해 Attack Detection(Normal vs Attack), Attack Classification(5-class) 성능을 확인합니다. 이미 알고 있는 패턴을 잘 맞추는지 보는 sanity check 성격이며, 미지의 공격에 대한 일반화를 보장하지 않습니다.
 
-**Unseen-Attack Evaluation (Leave-One-Attack-Out)**: 5종 공격 중 하나를 downstream 학습에서 완전히 제외하고, 나머지 4종 + Normal로만 Attack Detection Head를 학습합니다. 테스트에서 제외했던 공격을 처음 입력해서, 정확히 어떤 공격인지는 몰라도 "정상이 아니다"라고 판단할 수 있는지를 확인합니다. 5종 각각에 대해 반복하며, Attack Detection Head는 known(1) + unseen fold(5) 총 **6개** 모델을 학습합니다. 이 결과가 실제 generalization 성능을 나타내는 핵심 지표입니다.
+**Unseen-Attack Evaluation (Leave-One-Attack-Out)**: 5종 공격 중 하나를 downstream 학습에서 완전히 제외하고, 나머지 4종+Normal로 Attack Detection 모델을 학습합니다. 테스트에서 제외했던 공격을 처음 입력해서 "정상이 아니다"라고 판단할 수 있는지 확인합니다. 같은 fold의 Attack Classification 모델은 held-out 타입 없이(4-class) 학습되며, known type(4종) 분류 성능만 확인합니다 — held-out 타입을 분류하는 건 이 모델의 역할이 아닙니다. 5종 각각에 대해 반복하며, fold 6개 × 모델 2개(Detection+Classification) = 총 **12개** 모델을 학습합니다. Unseen fold의 Detection 결과가 실제 generalization 성능을 나타내는 핵심 지표입니다.
 
-Replay는 값 자체가 실제 정상 데이터라 window 내부 값만으로는 정상과 구분이 안 됩니다. 탐지 가능한 신호는 replay 구간 경계의 값 불연속뿐이므로, `detection` 데이터는 attack 경계를 포함하는 overlap window(stride < window 길이)로 구성합니다.
+Replay는 값 자체가 실제 정상 데이터라 window 내부 값만으로는 정상과 구분이 안 됩니다. 탐지 가능한 신호는 replay 구간 경계의 값 불연속뿐이므로, downstream 데이터는 attack 경계를 포함하는 overlap window(stride < window 길이)로 구성합니다.
 
 ### Train / Val / Test 분할
 
-`data/processed/downstream/detection/`의 타입별 pool(normal, scale_down, ramp, pulse_plateau, replay, instant_spike)은 각각 train/val/test로 시간순 분할되어 있고, fold마다 이 pool을 조합해서 씁니다.
+fold별 최종 데이터셋은 고정 시드로 한 번만 생성해서 그대로 씁니다 (fold마다 다시 만들지 않음 — 같은 유형의 데이터는 fold 간에 바이트 단위로 동일해야 비교가 공정합니다). Detection과 Classification은 같은 fold 데이터를 공유하되, Classification은 그중 Normal을 제외한 샘플만 사용합니다.
 
-- **train, val**: fold 구성과 동일 (held-out 타입은 train/val 둘 다에서 제외). Val이 학습 중 체크포인트 선택에 쓰이는데, 여기에 held-out 타입이 섞이면 "미지의 공격을 얼마나 잘 잡는지"가 체크포인트 선택 단계에서 이미 반영되어 평가가 오염되기 때문.
-- **test**: 6개 fold가 전부 공유하는 단일 세트(Normal + 5종 전부)로 평가. known 모델은 5종 전체 성능을, 각 unseen 모델은 자신의 held-out 타입 성능을 이 test set에서 확인.
+- **all_type**: Normal + 5종 전부, train/val/test 다 이 구성
+- **unseen_X**: Normal + (X 제외 4종), train/val만 생성 (X는 여기 등장 안 함 — val이 체크포인트 선택에 쓰이는데 여기 X가 섞이면 평가가 오염됨)
+- **test는 all_type의 test 하나만 존재**하며, 6개 fold의 Detection 모델 평가에 전부 이걸로 평가합니다. unseen_X 모델 입장에서는 이 test set에 자기가 한 번도 못 본 X가 포함되어 있으므로, 거기서의 반응이 핵심 결과가 됩니다.
 
 ```
-known:     train/val = Normal + 5종 전부      test = Normal + 5종 전부 (공유)
-unseen_X:  train/val = Normal + (X 제외 4종)   test = Normal + 5종 전부 (공유, X 성능이 핵심 지표)
+all_type:  train/val/test = Normal + 5종 전부
+unseen_X:  train/val      = Normal + (X 제외 4종)    (test 없음, all_type/test 재사용)
 ```
 
 ## 워크플로우
@@ -154,34 +172,37 @@ python scripts/prepare_data.py --config configs/data/default.yaml
 # 2) SSL pretraining (masked reconstruction + forecasting joint)
 python scripts/pretrain.py --config configs/pretrain/default.yaml
 
-# 3) downstream용 타입별 pool 생성 (attack injection, normal + 5종 + classification, 한 번만 실행)
+# 3) downstream용 fold별 데이터셋 생성 (attack injection, 고정 시드로 한 번만 실행)
 python scripts/prepare_downstream_data.py --config configs/downstream/attack_injection.yaml
 
-# 4) Attack Detection 학습 (known 1개 + unseen 5개, 같은 config를 --held-out-type만 바꿔서 총 6번 실행)
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --held-out-type scale_down
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --held-out-type ramp
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --held-out-type pulse_plateau
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --held-out-type replay
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --held-out-type instant_spike
+# 4) Attack Detection 학습 (all_type 1개 + unseen 5개, --fold만 바꿔서 총 6번 실행)
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold all_type
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_scale_down
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_ramp
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_pulse_plateau
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_replay
+python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_instant_spike
 
-# 5) Attack Classification 학습
-python scripts/train_classification.py --config configs/downstream/classification/known.yaml
-
-# 6) 평가 (6개 모델 전부 공유 test set으로 평가)
-python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml
-python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml --held-out-type scale_down
+# 5) Attack Classification 학습 (동일하게 6번)
+python scripts/train_classification.py --config configs/downstream/classification/default.yaml --fold all_type
+python scripts/train_classification.py --config configs/downstream/classification/default.yaml --fold unseen_scale_down
 # ... (나머지 unseen fold 동일)
-python scripts/evaluate_classification.py --config configs/downstream/classification/known.yaml
+
+# 6) 평가 (Detection 6개는 전부 all_type의 test set으로 평가)
+python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml --fold all_type
+python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml --fold unseen_scale_down
+# ... (나머지 unseen fold 동일)
+python scripts/evaluate_classification.py --config configs/downstream/classification/default.yaml --fold all_type
+# ... (나머지 unseen fold 동일)
 
 # 7) 새 데이터에 대한 추론
-python scripts/infer.py --ckpt checkpoints/downstream/detection/known/best.pt --input data/raw/new_lp.xlsx
+python scripts/infer.py --ckpt checkpoints/downstream/all_type/detector/best.pt --input data/raw/new_lp.xlsx
 ```
 
 ## 설계 원칙
 
-- `models/encoder.py`의 Transformer 백본은 pretrain과 두 downstream task 전체에서 **공유**됩니다. head만 교체됩니다.
-- Attack Detection과 Attack Classification은 역할이 다른 별개의 head입니다 — Detection은 "공격인가 아닌가", Classification은 "공격이라면 어떤 유형인가"만 담당합니다.
-- Detection Head는 known 1개 + unseen fold 5개, 총 6개 모델로 독립적으로 학습·평가됩니다. config 파일은 1개(`detection/default.yaml`)뿐이고, `--held-out-type` CLI 인자로 6개 fold를 구분해서 실행합니다.
-- `configs/downstream/attack_injection.yaml`이 공격 파라미터와 타입별 pool 생성 방식의 단일 출처입니다. Normal + 5종 pool을 한 번만 만들어서 모든 fold가 재사용하며, fold별로 다시 생성하지 않습니다.
-- Detection의 train/val은 fold 구성과 동일하게(held-out 타입 제외) 만들고, test는 6개 fold가 공유하는 단일 세트(Normal+5종)를 씁니다 — held-out 타입이 체크포인트 선택에 영향을 주지 않도록 하기 위함입니다.
+- `models/encoder.py`의 Transformer 백본은 pretrain과 두 downstream task 전체에서 **공유**됩니다 (각 학습 run이 이 pretrained encoder를 가져와 독립적으로 fine-tune). head만 교체됩니다.
+- Attack Detection과 Attack Classification은 역할이 다른 별개의 모델입니다 — Detection은 "공격인가 아닌가", Classification은 "공격이라면 어떤 유형인가"만 담당하며, 같은 encoder를 공유하며 동시에(joint) 학습하지 않고 각각 독립적인 학습 run으로 분리합니다.
+- 두 모델 다 all_type 1개 + unseen fold 5개, 총 6개 fold로 학습·평가되므로 전체 모델은 12개입니다. config 파일은 태스크당 1개(`detection/default.yaml`, `classification/default.yaml`)뿐이고 `--fold` CLI 인자로 구분합니다.
+- `configs/downstream/attack_injection.yaml`이 공격 파라미터와 fold별 데이터 생성 방식의 단일 출처입니다. 모든 fold 데이터는 한 번만, 고정 시드로 생성하며 Detection·Classification이 이를 공유합니다.
+- unseen fold의 train/val은 held-out 타입을 완전히 제외하고, Detection 평가의 test는 all_type의 test를 6개 모델이 공유합니다.

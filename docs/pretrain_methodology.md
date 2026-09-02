@@ -6,10 +6,10 @@
 
 Self-Supervised Learning(SSL)으로 정상 전력계 시계열의 temporal pattern을 먼저 학습한 뒤, Transformer 기반 모델로
 
-1. 공격 여부를 판단하고
-2. 공격일 경우 어떤 종류의 공격인지 분류한다
+1. 공격 여부를 판단하고 (Attack Detection)
+2. 공격일 경우 어떤 종류의 공격인지 분류한다 (Attack Classification)
 
-두 가지를 하나의 다중분류(multi-class classification) head로 함께 수행한다.
+이 둘은 별도의 head를 가진 별도의 모델로 각각 독립적으로 학습한다 (아래 3번 참고).
 
 ---
 
@@ -46,20 +46,20 @@ Pretrained Transformer Encoder
         ↓
 Time-series representation z_t
         ↓
-MeanPool(z_t) ; MaxPool(z_t)   ← concat
-        ↓
-MLP
-        ↓
-N-class classification
-(Normal, Scale Down, Ramp, Pulse Plateau, Replay, Instant Spike)
+ ┌─────────────────────────────┐
+ │                             │
+Attack Detection 모델        Attack Classification 모델
+(binary head)                 (multi-class head)
+ │                             │
+Normal(0) / Attack(1)      공격 유형
 ```
 
-Transformer Encoder 하나가 representation $z_t$를 만들고, 그 위에 **하나의 다중분류 head**만 얹는다. 별도의 binary detection head를 두지 않고, 이 N-class 분류 결과에서 두 정보를 모두 뽑아낸다.
+Transformer Encoder는 pretraining 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 동일하게 가져와서 각자의 head를 새로 붙여 **독립적으로** 학습한다. 같은 fold의 데이터를 쓰지만, Detection 모델과 Classification 모델은 서로 다른 학습 run(서로 다른 encoder 사본 + 서로 다른 head)이며, 하나의 encoder를 두 head가 공유하며 동시에 학습하는 구조가 아니다.
 
-- **공격 여부**: `argmax(prediction) != Normal` (또는 `1 - P(Normal)`을 anomaly score로 사용)
-- **공격 유형**: `argmax(prediction)` (Normal이 아닐 때 그 값)
+- **Attack Detection**: fold의 모든 샘플(Normal 포함) 사용, label은 (Normal이면 0, 공격이면 1)인 binary
+- **Attack Classification**: fold에서 Normal을 제외한 공격 샘플만 사용, label은 그 fold에 존재하는 공격 유형 중 하나 (multi-class)
 
-Encoder는 pretraining 단계에서 먼저 학습되고, downstream에서는 이 encoder를 가져와 classification head만 새로 붙인다.
+fold 하나당 이 두 모델이 각각 하나씩 나온다 (아래 7번 참고, 총 6개 fold × 2 head = 12개 모델).
 
 ---
 
@@ -120,19 +120,21 @@ Reconstruction과 forecasting은 공격을 판단하기 위한 최종 방법이 
 
 ---
 
-## 5. Stage 2: Downstream — N-class Attack Classification
+## 5. Stage 2: Downstream Task 1 — Attack Detection
 
-정상 데이터만 이용하는 one-class anomaly detection이 아니라, 레이블을 이용한 **supervised multi-class classification**이다. class 개수는 fold마다 다르다 (아래 7번 참고) — 모든 공격 유형을 다 아는 경우는 6-class(Normal+5종), 하나를 제외한 경우는 5-class(Normal+4종)다.
+정상 데이터만 이용하는 one-class anomaly detection이 아니라, 공격 label을 이용한 **supervised binary classification**이다.
 
 ```
-label 예 (전체 6-class인 경우):
+label:
 Normal          → 0
 Scale Down      → 1
-Ramp            → 2
-Pulse Plateau   → 3
-Replay          → 4
-Instant Spike   → 5
+Ramp            → 1
+Pulse Plateau   → 1
+Replay          → 1
+Instant Spike   → 1
 ```
+
+공격 종류는 중요하지 않고, "정상인가 공격인가"만 판단한다.
 
 ```
 X_t
@@ -145,17 +147,33 @@ MeanPool(z_t) ; MaxPool(z_t)   ← concat
  ↓
 MLP
  ↓
-N-class softmax
+Normal(0) / Attack(1)
 ```
 
-Mean pooling과 max pooling을 함께 쓰는 이유: Scale Down/Ramp/Pulse Plateau처럼 window 전체 패턴이 바뀌는 공격은 mean pooling이 잘 반영하고, Instant Spike처럼 1~2 step만 튀는 공격은 mean pooling에 신호가 희석되므로 max pooling이 필요하다. Cross Entropy loss를 사용한다.
+Mean pooling과 max pooling을 함께 쓰는 이유: Scale Down/Ramp/Pulse Plateau처럼 window 전체 패턴이 바뀌는 공격은 mean pooling이 잘 반영하고, Instant Spike처럼 1~2 step만 튀는 공격은 mean pooling에 신호가 희석되므로 max pooling이 필요하다. Binary Cross Entropy loss를 사용한다.
 
-이 하나의 head에서:
+## 6. Stage 3: Downstream Task 2 — Attack Classification
 
-- **공격 여부** = `argmax != Normal`
-- **공격 유형** = `argmax` (Normal이 아닐 때)
+공격 데이터가 어떤 공격 유형인지 분류한다. fold에 존재하는 공격 유형 수만큼 class를 가진다 (all_type은 5-class, unseen_X는 4-class — Normal은 이 head의 학습/출력에 포함되지 않는다).
 
-두 정보를 모두 얻는다. 별도의 binary detection head를 두지 않는다.
+```
+X_t
+ ↓
+Pretrained Transformer Encoder
+ ↓
+z_t
+ ↓
+MeanPool(z_t) ; MaxPool(z_t)   ← concat
+ ↓
+MLP
+ ↓
+공격 유형 (해당 fold에 존재하는 타입 중 하나)
+```
+
+Attack Detection과 Attack Classification의 역할은 명확히 다르다.
+
+- Attack Detection: 공격인가 아닌가?
+- Attack Classification: 공격이라면 어떤 공격인가?
 
 ### Windowing 설계 (Replay 탐지를 위한 요구사항)
 
@@ -165,9 +183,9 @@ Replay는 값 자체가 실제 정상 데이터이기 때문에, window 하나�
 
 ---
 
-## 6. All-Type Evaluation
+## 7. All-Type Evaluation
 
-5종 공격을 모두 downstream 학습(train)과 평가(test)에 사용한다 (6-class: Normal+5종).
+5종 공격을 모두 downstream 학습(train)과 평가(test)에 사용한다 (all_type fold). Detection 모델, Classification 모델 둘 다 이 fold로 학습·평가한다.
 
 ```
 Training / Val / Test 공통 구성:
@@ -176,29 +194,29 @@ Normal, Scale Down, Ramp, Pulse Plateau, Replay, Instant Spike
 
 평가 항목:
 
-1. 공격 여부 판단 성능 (argmax != Normal 기준, Normal vs Attack)
-2. 공격 유형 분류 성능 (6-class accuracy / confusion matrix)
+1. Attack Detection 성능 (Normal vs Attack)
+2. Attack Classification 성능 (5-class accuracy / confusion matrix)
 
 이 결과는 모델이 이미 알고 있는 공격 패턴을 잘 맞추는지 확인하는 sanity check 성격이며, 미지의 공격에 대한 일반화 성능을 보장하지 않는다.
 
 ---
 
-## 7. Unseen-Attack Evaluation (Leave-One-Attack-Out)
+## 8. Unseen-Attack Evaluation (Leave-One-Attack-Out)
 
-학습하지 않은 새로운 공격 유형에 대해서도 여전히 "정상이 아니다"라고 판단할 수 있는지 평가한다. 5개 공격 중 하나를 downstream training에서 완전히 제외하고 (해당 class 자체가 존재하지 않는 5-class 분류기를 학습), 나머지 4개 + Normal로 학습한다. 이후 test에서 제외했던 공격을 처음 입력한다.
+학습하지 않은 새로운 공격 유형에 대해서도 Attack Detection이 가능한지 평가한다. 5개 공격 중 하나를 downstream training에서 완전히 제외하고, 나머지 4개 + Normal로 Attack Detection 모델을 학습한다. 이후 test에서 제외했던 공격을 처음 입력한다.
 
 ```
-예: Replay를 unseen attack으로 설정 (5-class: Normal, Scale Down, Ramp, Pulse Plateau, Instant Spike)
+예: Replay를 unseen attack으로 설정
 
-Training:
-Normal, Scale Down, Ramp, Pulse Plateau, Instant Spike만 사용
-(Replay는 학습에 전혀 사용하지 않음 — class 자체가 없음)
+Training (Detection):
+Normal → 0, Scale Down → 1, Ramp → 1, Pulse Plateau → 1, Instant Spike → 1
+(Replay는 training에 전혀 사용하지 않음)
 
 Test:
 Replay 데이터를 처음 입력
 ```
 
-목표는 Replay를 "Replay"라고 정확히 분류하는 것이 아니다 (애초에 이 모델은 Replay라는 class 자체를 모른다). 확인하고 싶은 것은 `argmax != Normal` — 즉 "정확히 무슨 공격인지는 몰라도 정상은 아니다"라고 판단하는지다. 만약 모델이 Replay 입력을 자신이 아는 4개 class 중 하나(예: Ramp)로 확신을 갖고 예측한다면, 그 자체가 유의미한 결과다 — "이 구조가 미지의 공격에 얼마나 취약한지"를 보여주는 것이지, 평가가 잘못된 것이 아니다.
+목표는 Replay를 "Replay"라고 분류하는 것이 아니라, Attack Detection 모델이 `Replay → Attack(1)`이라고 판단할 수 있는지를 보는 것이다. 즉 "정확히 무슨 공격인지는 모르지만 정상은 아니다"를 판단할 수 있는지가 핵심이다. 이 fold의 Attack Classification 모델도 같은 이유로 Replay라는 class 자체 없이(4-class) 학습되며, 이 모델에 대해서는 known-type(4종) 분류 성능만 확인한다 — Replay 자체를 분류하는 건 애초에 이 모델의 역할이 아니다.
 
 이 절차를 5개 공격 각각에 대해 반복한다.
 
@@ -210,15 +228,15 @@ Replay 데이터를 처음 입력
 5. Instant Spike 제외 → Instant Spike를 unseen attack으로 test
 ```
 
-총 **6개** 모델을 학습한다 (all_type 1개: 6-class + unseen fold 5개: 각각 5-class). 이 evaluation이 미지의 공격에 대한 generalization 성능을 확인하는 핵심 실험이다.
+fold는 총 6개(all_type 1 + unseen 5)이고, fold마다 Detection 모델과 Classification 모델을 각각 독립적으로 학습하므로 총 **12개** 모델이 나온다. Unseen fold의 Attack Detection 결과가 미지의 공격에 대한 generalization 성능을 확인하는 핵심 실험이다.
 
 ### Train / Val / Test 분할
 
-fold별 최종 데이터셋을 한 번의 고정 시드로 생성해서 그대로 사용한다 (fold마다 다시 생성하지 않음 — 같은 유형의 데이터는 fold 간에 동일해야 비교가 공정하다).
+fold별 최종 데이터셋을 한 번의 고정 시드로 생성해서 그대로 사용한다 (fold마다 다시 생성하지 않음 — 같은 유형의 데이터는 fold 간에 동일해야 비교가 공정하다). Detection 모델과 Classification 모델은 같은 fold의 데이터를 공유하되, Classification은 그중 Normal을 제외한 샘플만 사용한다.
 
 - **all_type**: Normal + 5종 전부. train/val/test 모두 이 구성.
 - **unseen_X**: Normal + (X 제외 4종). train/val만 만든다 (X는 train/val 어디에도 등장하지 않음 — val이 체크포인트 선택에 쓰이는데 여기에 X가 섞이면 "미지의 공격을 얼마나 잘 잡는지"가 이미 반영되어 평가가 오염된다).
-- **test는 all_type의 test 하나만 존재하며, 6개 모델 전부 이걸로 평가한다.** unseen_X 모델은 원래 이 test set에 X가 포함되어 있으므로, 그 부분에서 자신이 한 번도 못 본 X에 대해 어떻게 반응하는지가 핵심 결과가 된다.
+- **test는 all_type의 test 하나만 존재하며, 6개 fold의 Detection 모델(6개) 평가에 전부 이걸로 평가한다.** unseen_X 모델은 원래 이 test set에 X가 포함되어 있으므로, 그 부분에서 자신이 한 번도 못 본 X에 대해 어떻게 반응하는지가 핵심 결과가 된다.
 
 ```
 all_type:     train/val/test = Normal + 5종 전부
@@ -227,7 +245,7 @@ unseen_X:     train/val      = Normal + (X 제외 4종)      (test 없음, all_t
 
 ---
 
-## 8. 전체 파이프라인 요약
+## 9. 전체 파이프라인 요약
 
 ```
 [SSL Pretraining]
@@ -248,22 +266,22 @@ L_pretrain = L_mask + lambda * L_forecast     (lambda ≈ 0.1~0.2)
 
             ↓  (Reconstruction/Forecasting Head 제거, Encoder만 유지)
 
-[Downstream]
+[Downstream — fold(all_type + unseen 5개)마다 아래 두 모델을 독립적으로 학습]
 Power-meter time-series window X_t
         ↓
 Pretrained Transformer Encoder
         ↓
 Representation z_t
         ↓
-MeanPool+MaxPool → MLP → N-class softmax
-(Normal, Scale Down, Ramp, Pulse Plateau, Replay, Instant Spike)
-        ↓
-공격 여부  = argmax != Normal
-공격 유형  = argmax
+ ┌─────────────────────────────┐
+ │                             │
+Attack Detection 모델        Attack Classification 모델
+(MeanPool+MaxPool→MLP→binary) (MeanPool+MaxPool→MLP→multi-class)
+Normal / Attack               공격 유형 (Normal 제외 샘플만 학습)
 
 [평가]
-- All-Type Evaluation: 6-class(Normal+5종) 모두 train/val/test에 사용 (sanity check)
+- All-Type Evaluation: 5종 모두 train/val/test에 사용 (sanity check)
 - Unseen-Attack Evaluation: leave-one-attack-out, 5-fold 전부 수행
-  → train/val은 fold별로 held-out 타입 제외한 5-class, test는 all_type의 test 공유
-  → 총 6개 모델 (all_type 1 + unseen 5)
+  → train/val은 fold별로 held-out 타입 제외, test는 all_type의 test 공유
+  → fold 6개 × head 2개 = 총 12개 모델
 ```
