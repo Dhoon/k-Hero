@@ -175,27 +175,29 @@ python scripts/pretrain.py --config configs/pretrain/default.yaml
 # 3) downstream용 fold별 데이터셋 생성 (attack injection, 고정 시드로 한 번만 실행)
 python scripts/prepare_downstream_data.py --config configs/downstream/attack_injection.yaml
 
-# 4) Attack Detection 학습 (all_type 1개 + unseen 5개, --fold만 바꿔서 총 6번 실행)
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold all_type
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_scale_down
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_ramp
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_pulse_plateau
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_replay
-python scripts/train_detection.py --config configs/downstream/detection/default.yaml --fold unseen_instant_spike
+# 4) Attack Detection + Classification 학습
+#    fold 하나당 encoder(frozen)를 1번만 통과시키고, 그 결과로 detector+classifier를 같은 스크립트 안에서 함께 학습
+#    (a) 전체 6개 fold를 한 번에 (--fold 생략 또는 all)
+python scripts/train_downstream.py --config configs/downstream/default.yaml
+#    (b) fold 하나만 개별 실행하고 싶을 때
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold all_type
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_replay
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike
 
-# 5) Attack Classification 학습 (동일하게 6번)
-python scripts/train_classification.py --config configs/downstream/classification/default.yaml --fold all_type
-python scripts/train_classification.py --config configs/downstream/classification/default.yaml --fold unseen_scale_down
-# ... (나머지 unseen fold 동일)
 
-# 6) 평가 (Detection 6개는 전부 all_type의 test set으로 평가)
-python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml --fold all_type
-python scripts/evaluate_detection.py --config configs/downstream/detection/default.yaml --fold unseen_scale_down
-# ... (나머지 unseen fold 동일)
-python scripts/evaluate_classification.py --config configs/downstream/classification/default.yaml --fold all_type
-# ... (나머지 unseen fold 동일)
+# 5) 평가 (Detection 6개는 전부 all_type의 test set으로 평가)
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold all_type
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_replay
+python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike
 
-# 7) 새 데이터에 대한 추론
+# 6) 새 데이터에 대한 추론
 python scripts/infer.py --ckpt checkpoints/downstream/all_type/detector/best.pt --input data/raw/new_lp.xlsx
 ```
 
