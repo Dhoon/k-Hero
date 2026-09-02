@@ -19,6 +19,10 @@ ssl:
   mask_ratio_end: 0.40
   curriculum_epochs: 50               # 이 epoch까지 선형 증가, 이후 end 고정
 
+  # Forecasting 보조 objective
+  forecast_loss_weight: 0.15          # L_pretrain = L_mask + 0.15 * L_forecast
+  mask_guard_tail: 8                  # 마지막 8 timestep은 마스킹 후보에서 제외 (forecasting anchor 보호)
+
 train:
   epochs: 100
   batch_size: 128

@@ -1,4 +1,4 @@
-"""Encoder / TemporalEncoding / Masking / Loss 스모크 테스트.
+"""Encoder / TemporalEncoding / Masking / Loss / ForecastingHead 스모크 테스트.
 
 실행:
     pytest tests/test_models.py -v
@@ -9,8 +9,9 @@ import torch
 from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.positional_encoding import TemporalEncoding
 from src.adt.models.heads.pretrain_head import MaskedReconstructionHead
+from src.adt.models.heads.forecasting_head import ForecastingHead
 from src.adt.ssl.masking import generate_mask, get_mask_ratio, segment_mask, channel_mask
-from src.adt.ssl.losses import masked_reconstruction_loss
+from src.adt.ssl.losses import masked_reconstruction_loss, forecast_loss, pretrain_joint_loss
 
 
 # ------------------------------------------------------------------
@@ -302,3 +303,143 @@ class TestPretrainPipeline:
         # encoder의 mask_token gradient 확인
         assert enc.mask_token.grad is not None
         assert not torch.isnan(enc.mask_token.grad).any()
+
+
+# ------------------------------------------------------------------
+# ForecastingHead
+# ------------------------------------------------------------------
+
+H = 8   # forecast_horizon
+
+class TestForecastingHead:
+    def test_output_shape(self, encoder, sample_x, sample_time_feat):
+        """출력 shape이 (B, h, C)인지 확인."""
+        head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C)
+        with torch.no_grad():
+            enc_out = encoder(sample_x, sample_time_feat)
+            pred = head(enc_out)
+        assert pred.shape == (B, H, C), f"Expected {(B, H, C)}, got {pred.shape}"
+
+    def test_no_nan(self, encoder, sample_x, sample_time_feat):
+        head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C)
+        with torch.no_grad():
+            pred = head(encoder(sample_x, sample_time_feat))
+        assert not torch.isnan(pred).any()
+
+    def test_uses_last_timestep(self):
+        """h_L (마지막 타임스텝)만 사용하므로 마지막 timestep을 바꾸면 출력이 달라진다."""
+        head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C).eval()
+        z1 = torch.randn(1, T, D)
+        z2 = z1.clone()
+        z2[0, -1, :] += 10.0   # 마지막 타임스텝만 변경
+        with torch.no_grad():
+            out1 = head(z1)
+            out2 = head(z2)
+        assert not torch.allclose(out1, out2)
+
+    def test_gradient_flows(self, sample_x, sample_time_feat):
+        """역전파가 ForecastingHead 파라미터까지 흐르는지."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=128, dropout=0.0
+        ).train()
+        head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C).train()
+        future_gt = torch.randn(B, H, C)
+
+        pred = head(enc(sample_x, sample_time_feat))
+        loss = forecast_loss(pred, future_gt)
+        loss.backward()
+
+        for name, p in head.named_parameters():
+            assert p.grad is not None, f"{name} grad is None"
+            assert not torch.isnan(p.grad).any(), f"{name} grad has NaN"
+
+
+# ------------------------------------------------------------------
+# mask_guard_tail
+# ------------------------------------------------------------------
+
+GUARD_TAIL = 8
+
+class TestMaskGuardTail:
+    def test_segment_mode_no_mask_in_tail(self, sample_x):
+        """segment 모드에서 마지막 guard_tail timestep은 마스킹되지 않아야 한다."""
+        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
+        for _ in range(30):   # 30회 반복으로 확률적 검증
+            mask = generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+            # segment 모드 반환: (B, T)
+            assert mask.shape == (B, T)
+            tail = mask[:, -GUARD_TAIL:]
+            assert not tail.any(), f"guard_tail 구간에 마스킹된 위치 발견: {tail.nonzero()}"
+
+    def test_guard_tail_does_not_zero_out_all_masks(self, sample_x):
+        """guard_tail 적용 후에도 마스킹된 위치가 존재해야 한다 (ratio 유지)."""
+        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
+        mask = generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+        assert mask.any(), "guard_tail 적용 후 마스킹된 위치가 전혀 없음"
+
+    def test_without_guard_tail_can_mask_tail(self, sample_x):
+        """guard_tail=0 이면 마지막 구간도 마스킹 가능 (통계적 검증)."""
+        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": 0}
+        # 100회 중 최소 1회는 마지막 구간이 마스킹돼야 함
+        found = False
+        x_large = torch.randn(64, T, C)
+        for _ in range(100):
+            mask = generate_mask(x_large, epoch=0, ssl_cfg=cfg)
+            if mask[:, -GUARD_TAIL:].any():
+                found = True
+                break
+        assert found, "guard_tail=0인데 마지막 구간이 100회 중 한 번도 마스킹 안 됨 (구현 오류 가능성)"
+
+
+# ------------------------------------------------------------------
+# Joint loss
+# ------------------------------------------------------------------
+
+class TestJointLoss:
+    def test_forecast_loss_scalar(self):
+        pred = torch.randn(B, H, C)
+        true = torch.randn(B, H, C)
+        loss = forecast_loss(pred, true)
+        assert loss.shape == (), f"forecast_loss가 스칼라가 아님: {loss.shape}"
+        assert not torch.isnan(loss)
+        assert loss.item() >= 0.0
+
+    def test_joint_loss_correct_sum(self):
+        """pretrain_joint_loss = l_mask + w * l_forecast."""
+        l_mask = torch.tensor(1.0)
+        l_fc = torch.tensor(2.0)
+        w = 0.15
+        total = pretrain_joint_loss(l_mask, l_fc, w)
+        expected = 1.0 + 0.15 * 2.0
+        assert abs(total.item() - expected) < 1e-5, f"expected {expected}, got {total.item()}"
+
+    def test_joint_loss_gradient_to_both_heads(self, sample_x, sample_time_feat):
+        """joint loss에서 역전파 시 reconstruction_head와 forecasting_head 모두 gradient 수신."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=128, dropout=0.0
+        ).train()
+        recon_head = MaskedReconstructionHead(d_model=D, n_features=C).train()
+        fc_head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C).train()
+
+        mask = generate_mask(sample_x, epoch=0, ssl_cfg=SSL_CFG)
+        enc_out = enc(sample_x, sample_time_feat, mask=mask)
+
+        pred_recon = recon_head(enc_out)
+        pred_future = fc_head(enc_out)
+        future_gt = torch.randn(B, H, C)
+
+        l_mask = masked_reconstruction_loss(pred_recon, sample_x, mask)
+        l_fc = forecast_loss(pred_future, future_gt)
+        loss = pretrain_joint_loss(l_mask, l_fc, forecast_weight=0.15)
+        loss.backward()
+
+        # recon_head gradient 확인
+        for name, p in recon_head.named_parameters():
+            assert p.grad is not None, f"recon_head.{name} grad is None"
+
+        # forecast_head gradient 확인
+        for name, p in fc_head.named_parameters():
+            assert p.grad is not None, f"forecast_head.{name} grad is None"
+
+        # encoder gradient 확인 (두 head로부터 흘러야 함)
+        assert enc.mask_token.grad is not None

@@ -29,11 +29,11 @@ X_t = [x_(t-L+1), ..., x_t]      shape: (L, 4)
 
 ### 공격 유형 (5종)
 
-1. **Scale Down** — 일정 시간 동안 정상 전력값을 일정 비율로 축소. 시계열의 전체적인 모양은 비슷하지만 magnitude가 작아짐.
-2. **Ramp** — 일정 시간 동안 전력값을 서서히 증가/감소. 순간적인 이상값이 아니라 정상 trajectory에서 점진적으로 벗어남.
-3. **Pulse Plateau** — 일정 시간 동안 전력값을 정상보다 크게 증가시킨 상태로 유지. 순간 spike가 아니라 높은 값이 일정 구간 지속됨.
-4. **Replay** — 과거에 실제로 측정됐던 정상 시계열 데이터를 현재 데이터 대신 재전송. 값 자체는 실제 정상 데이터이기 때문에 단순 값 범위 기반 탐지가 어려움.
-5. **Instant Spike** — 1~2개의 짧은 timestep에서 전력값이 순간적으로 크게 증가.
+1. Scale Down — 일정 시간 동안 정상 전력값을 일정 비율로 축소. 시계열의 전체적인 모양은 비슷하지만 magnitude가 작아짐.
+2. Ramp — 일정 시간 동안 전력값을 서서히 증가/감소. 순간적인 이상값이 아니라 정상 trajectory에서 점진적으로 벗어남.
+3. Pulse Plateau — 일정 시간 동안 전력값을 정상보다 크게 증가시킨 상태로 유지. 순간 spike가 아니라 높은 값이 일정 구간 지속됨.
+4. Replay — 과거에 실제로 측정됐던 정상 시계열 데이터를 현재 데이터 대신 재전송. 값 자체는 실제 정상 데이터이기 때문에 단순 값 범위 기반 탐지가 어려움.
+5. Instant Spike — 1~2개의 짧은 timestep에서 전력값이 순간적으로 크게 증가.
 
 ---
 
@@ -54,10 +54,10 @@ Attack Detection 모델        Attack Classification 모델
 Normal(0) / Attack(1)      공격 유형
 ```
 
-Transformer Encoder는 pretraining 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 동일하게 가져와서 각자의 head를 새로 붙여 **독립적으로** 학습한다. 같은 fold의 데이터를 쓰지만, Detection 모델과 Classification 모델은 서로 다른 학습 run(서로 다른 encoder 사본 + 서로 다른 head)이며, 하나의 encoder를 두 head가 공유하며 동시에 학습하는 구조가 아니다.
+Transformer Encoder는 pretraining 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 동일하게 가져와서 각자의 head를 새로 붙여 독립적으로 학습한다. 같은 fold의 데이터를 쓰지만, Detection 모델과 Classification 모델은 서로 다른 학습 run(서로 다른 encoder 사본 + 서로 다른 head)이며, 하나의 encoder를 두 head가 공유하며 동시에 학습하는 구조가 아니다.
 
-- **Attack Detection**: fold의 모든 샘플(Normal 포함) 사용, label은 (Normal이면 0, 공격이면 1)인 binary
-- **Attack Classification**: fold에서 Normal을 제외한 공격 샘플만 사용, label은 그 fold에 존재하는 공격 유형 중 하나 (multi-class)
+- Attack Detection: fold의 모든 샘플(Normal 포함) 사용, label은 (Normal이면 0, 공격이면 1)인 binary
+- Attack Classification: fold에서 Normal을 제외한 공격 샘플만 사용, label은 그 fold에 존재하는 공격 유형 중 하나 (multi-class)
 
 fold 하나당 이 두 모델이 각각 하나씩 나온다 (아래 7번 참고, 총 6개 fold × 2 head = 12개 모델).
 
@@ -69,7 +69,7 @@ fold 하나당 이 두 모델이 각각 하나씩 나온다 (아래 7번 참고,
 
 ### 4.1 Masked Reconstruction (주 objective)
 
-정상 시계열 window의 일부 구간을 **segment 단위**로 masking한다. 인접 시점 몇 개만 가리면 주변 값 보간으로 trivial하게 풀려버려서 진짜 temporal structure를 배우지 못하므로, 연속된 구간(segment)을 통째로 가린다.
+정상 시계열 window의 일부 구간을 segment 단위로 masking한다. 인접 시점 몇 개만 가리면 주변 값 보간으로 trivial하게 풀려버려서 진짜 temporal structure를 배우지 못하므로, 연속된 구간(segment)을 통째로 가린다.
 
 - masking 비율은 15% → 40%로 curriculum 방식으로 점진적으로 올린다 (학습 초반엔 쉬운 과제, 후반엔 어려운 과제).
 - 가려진 위치는 0이 아니라 학습 가능한 [MASK] 벡터로 치환한다.
@@ -122,7 +122,7 @@ Reconstruction과 forecasting은 공격을 판단하기 위한 최종 방법이 
 
 ## 5. Stage 2: Downstream Task 1 — Attack Detection
 
-정상 데이터만 이용하는 one-class anomaly detection이 아니라, 공격 label을 이용한 **supervised binary classification**이다.
+정상 데이터만 이용하는 one-class anomaly detection이 아니라, 공격 label을 이용한 supervised binary classification이다.
 
 ```
 label:
@@ -177,7 +177,7 @@ Attack Detection과 Attack Classification의 역할은 명확히 다르다.
 
 ### Windowing 설계 (Replay 탐지를 위한 요구사항)
 
-Replay는 값 자체가 실제 정상 데이터이기 때문에, window 하나만 놓고 보면 값의 magnitude나 trajectory로는 정상과 구분되지 않는다. 탐지 가능한 유일한 신호는 replay 구간의 시작/끝 지점에서 발생하는 **값의 불연속(경계)**이다.
+Replay는 값 자체가 실제 정상 데이터이기 때문에, window 하나만 놓고 보면 값의 magnitude나 trajectory로는 정상과 구분되지 않는다. 탐지 가능한 유일한 신호는 replay 구간의 시작/끝 지점에서 발생하는 값의 불연속(경계)이다.
 
 이 신호를 모델이 볼 수 있으려면, window가 replay 구간의 경계를 포함해야 한다. 즉 window를 만들 때 stride를 window 길이보다 작게 잡아 overlap을 주어서, 공격 구간에 완전히 갇힌 window뿐 아니라 경계를 걸친 window도 충분히 존재하도록 해야 한다. training과 evaluation 양쪽 모두에 적용한다.
 
@@ -228,15 +228,15 @@ Replay 데이터를 처음 입력
 5. Instant Spike 제외 → Instant Spike를 unseen attack으로 test
 ```
 
-fold는 총 6개(all_type 1 + unseen 5)이고, fold마다 Detection 모델과 Classification 모델을 각각 독립적으로 학습하므로 총 **12개** 모델이 나온다. Unseen fold의 Attack Detection 결과가 미지의 공격에 대한 generalization 성능을 확인하는 핵심 실험이다.
+fold는 총 6개(all_type 1 + unseen 5)이고, fold마다 Detection 모델과 Classification 모델을 각각 독립적으로 학습하므로 총 12개 모델이 나온다. Unseen fold의 Attack Detection 결과가 미지의 공격에 대한 generalization 성능을 확인하는 핵심 실험이다.
 
 ### Train / Val / Test 분할
 
 fold별 최종 데이터셋을 한 번의 고정 시드로 생성해서 그대로 사용한다 (fold마다 다시 생성하지 않음 — 같은 유형의 데이터는 fold 간에 동일해야 비교가 공정하다). Detection 모델과 Classification 모델은 같은 fold의 데이터를 공유하되, Classification은 그중 Normal을 제외한 샘플만 사용한다.
 
-- **all_type**: Normal + 5종 전부. train/val/test 모두 이 구성.
-- **unseen_X**: Normal + (X 제외 4종). train/val만 만든다 (X는 train/val 어디에도 등장하지 않음 — val이 체크포인트 선택에 쓰이는데 여기에 X가 섞이면 "미지의 공격을 얼마나 잘 잡는지"가 이미 반영되어 평가가 오염된다).
-- **test는 all_type의 test 하나만 존재하며, 6개 fold의 Detection 모델(6개) 평가에 전부 이걸로 평가한다.** unseen_X 모델은 원래 이 test set에 X가 포함되어 있으므로, 그 부분에서 자신이 한 번도 못 본 X에 대해 어떻게 반응하는지가 핵심 결과가 된다.
+- all_type: Normal + 5종 전부. train/val/test 모두 이 구성.
+- unseen_X: Normal + (X 제외 4종). train/val만 만든다 (X는 train/val 어디에도 등장하지 않음 — val이 체크포인트 선택에 쓰이는데 여기에 X가 섞이면 "미지의 공격을 얼마나 잘 잡는지"가 이미 반영되어 평가가 오염된다).
+- test는 all_type의 test 하나만 존재하며, 6개 fold의 Detection 모델(6개) 평가에 전부 이걸로 평가한다. unseen_X 모델은 원래 이 test set에 X가 포함되어 있으므로, 그 부분에서 자신이 한 번도 못 본 X에 대해 어떻게 반응하는지가 핵심 결과가 된다.
 
 ```
 all_type:     train/val/test = Normal + 5종 전부

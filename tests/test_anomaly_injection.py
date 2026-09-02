@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.adt.data.anomaly_injection import (
+from src.adt.data.attack_injection import (
     inject_instant_spike,
     inject_pulse_plateau,
     inject_ramp,
