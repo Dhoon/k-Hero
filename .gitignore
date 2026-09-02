@@ -3,11 +3,8 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 
-# ── 원본 / 중간 데이터 ──────────────────────────────────────────
-data/raw/*
-!data/raw/.gitkeep
-data/interim/*
-!data/interim/.gitkeep
+# ── 데이터 ──────────────────────────────────────────
+data/*
 
 # ── processed 데이터 (.gitkeep만 추적) ──────────────────────────
 data/processed/**
