@@ -1,11 +1,15 @@
-"""분류 학습용 Dataset — Leave-one-attack-type-out.
+"""분류/탐지 학습용 Dataset + downstream fold 생성 오케스트레이터.
 
-split별 역할:
-  train/val : known_types(4종)만 주입 → 학습/검증
-  test      : held_out_type(1종)만 주입 → 일반화 성능 평가
+# 기존 API (build_classification_dataset)
+  split별 역할:
+    train/val : known_types(4종)만 주입 → 학습/검증
+    test      : held_out_type(1종)만 주입 → 일반화 성능 평가
 
-레이블 누수 방지를 위해 stride=window_size 비겹침 윈도우만 사용.
-이미 있는 inject_* 함수를 재사용하고, "어떤 타입을 어느 split에 적용할지"만 오케스트레이션.
+# 새 API (generate_downstream_folds)
+  all_type superset 한 번 생성 후 unseen_X fold는 필터링만 적용:
+    - all_type   : Normal + 5종 전부, train/val/test
+    - unseen_X   : Normal + 4종(X 제외),  train/val
+  → fold 간 공유 샘플이 바이트 단위로 동일하게 유지됨
 """
 from __future__ import annotations
 
@@ -18,13 +22,41 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Dataset
 
-from src.adt.data.anomaly_injection import inject_synthetic_anomalies
+from src.adt.data.attack_injection import (
+    inject_instant_spike,
+    inject_pulse_plateau,
+    inject_ramp,
+    inject_replay,
+    inject_scale_down,
+    inject_synthetic_anomalies,
+)
 from src.adt.data.scalers import StandardScalerND
 
+# ── type label 상수 ────────────────────────────────────────────────────────
+LABEL_NORMAL = -1  # Normal 윈도우의 type_label 값
 
-# -------------------------------------------------------------------------
-# Dataset
-# -------------------------------------------------------------------------
+TYPE_IDX: dict[str, int] = {
+    "scale_down":    0,
+    "ramp":          1,
+    "pulse_plateau": 2,
+    "replay":        3,
+    "instant_spike": 4,
+}
+
+# generate_downstream_folds 의 fold 기본값 (yaml에서 오버라이드 가능)
+_DEFAULT_FOLD_DEFS: list[dict] = [
+    {"name": "all_type",             "unseen_type": None,            "splits": ["train", "val", "test"]},
+    {"name": "unseen_scale_down",    "unseen_type": "scale_down",    "splits": ["train", "val"]},
+    {"name": "unseen_ramp",          "unseen_type": "ramp",          "splits": ["train", "val"]},
+    {"name": "unseen_pulse_plateau", "unseen_type": "pulse_plateau", "splits": ["train", "val"]},
+    {"name": "unseen_replay",        "unseen_type": "replay",        "splits": ["train", "val"]},
+    {"name": "unseen_instant_spike", "unseen_type": "instant_spike", "splits": ["train", "val"]},
+]
+
+
+# =========================================================================
+# Dataset (기존 API)
+# =========================================================================
 
 class ClassificationWindowDataset(Dataset):
     """(x_norm, time_feat, label) 튜플 Dataset.
@@ -50,15 +82,14 @@ class ClassificationWindowDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.X[idx], self.time_feat[idx], self.labels[idx]
 
-    # label numpy array (sampler 가중치 계산용)
     @property
     def label_array(self) -> np.ndarray:
         return self.labels.numpy()
 
 
-# -------------------------------------------------------------------------
-# 내부 헬퍼
-# -------------------------------------------------------------------------
+# =========================================================================
+# 내부 헬퍼 (기존)
+# =========================================================================
 
 def _filter_injection_cfg(injection_cfg: dict, allowed_types: list[str]) -> dict:
     """anomaly_types 중 allowed_types만 남기고 확률 재정규화."""
@@ -77,9 +108,9 @@ def _filter_injection_cfg(injection_cfg: dict, allowed_types: list[str]) -> dict
     return cfg
 
 
-# -------------------------------------------------------------------------
-# 팩토리
-# -------------------------------------------------------------------------
+# =========================================================================
+# 팩토리 (기존 API — 하위 호환)
+# =========================================================================
 
 def build_classification_dataset(
     processed_dir: str | Path,
@@ -182,3 +213,171 @@ def build_classification_dataloader(
         pin_memory=torch.cuda.is_available(),
         drop_last=False,
     )
+
+
+# =========================================================================
+# 새 API — type_label 포함 주입 + fold 오케스트레이션
+# =========================================================================
+
+def _inject_with_type_labels(
+    clean_windows_norm: np.ndarray,
+    cfg: dict,
+    scaler: StandardScalerND,
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray]:
+    """attack 주입 후 type_label(-1=Normal, 0..4=attack 종류)을 함께 반환.
+
+    Returns:
+        corrupted_norm : (N, T, C) float32 — 정규화된 주입 결과
+        type_labels    : (N,)  int32       — LABEL_NORMAL(-1) 또는 TYPE_IDX[type]
+    """
+    rng = np.random.default_rng(seed)
+    N, T, C = clean_windows_norm.shape
+
+    raw_windows = scaler.inverse_transform(clean_windows_norm)
+    n_inject = max(1, int(N * cfg["injection_ratio"]))
+    inject_indices = rng.choice(N, size=n_inject, replace=False)
+
+    atypes = cfg["anomaly_types"]
+    probs = np.array([a["prob"] for a in atypes], dtype=float)
+    probs /= probs.sum()
+
+    corrupted_raw = raw_windows.copy()
+    type_labels = np.full(N, LABEL_NORMAL, dtype=np.int32)
+
+    for idx in inject_indices:
+        ti = int(rng.choice(len(atypes), p=probs))
+        atype = atypes[ti]
+        name = atype["type"]
+        ch = int(rng.integers(0, C))
+        w = corrupted_raw[idx]  # (T, C)
+
+        if name == "scale_down":
+            w, _ = inject_scale_down(
+                w, ch, atype["scale_factor"], atype["duration_steps"], rng
+            )
+        elif name == "ramp":
+            w, _ = inject_ramp(
+                w, ch, atype["scale_start"], atype["trough_scale"],
+                atype["duration_steps"], rng,
+            )
+        elif name == "pulse_plateau":
+            w, _ = inject_pulse_plateau(
+                w, ch, atype["magnitude"], atype["duration_steps"], rng
+            )
+        elif name == "replay":
+            w, _ = inject_replay(
+                w, ch, atype["duration_steps"], raw_windows, rng
+            )
+        elif name == "instant_spike":
+            w, _ = inject_instant_spike(
+                w, ch, atype["magnitude"], atype["duration_steps"], rng
+            )
+        else:
+            continue  # 알 수 없는 타입은 건너뜀
+
+        corrupted_raw[idx] = w
+        type_labels[idx] = TYPE_IDX.get(name, LABEL_NORMAL)
+
+    corrupted_norm = scaler.transform(corrupted_raw)
+    return corrupted_norm, type_labels
+
+
+def generate_downstream_folds(
+    pretrain_dir: str | Path,
+    output_dir: str | Path,
+    cfg: dict,
+    scaler: StandardScalerND,
+) -> dict:
+    """all_type superset → unseen_X 필터링으로 6개 fold를 한 번에 생성·저장.
+
+    저장 구조::
+        {output_dir}/{fold_name}/{split}/
+            X.npy            (N, T, C) float32
+            time_feat.npy    (N, T, 2) float32
+            binary_label.npy (N,)      int32  — 0=Normal, 1=Attack
+            type_label.npy   (N,)      int32  — LABEL_NORMAL(-1) or TYPE_IDX
+
+    Returns:
+        stats: { fold_name: { split: { total, normal, attacks: {type: count} } } }
+    """
+    pretrain_dir = Path(pretrain_dir)
+    output_dir = Path(output_dir)
+    base_seed = cfg.get("seed", 42)
+    fold_defs = cfg.get("folds", _DEFAULT_FOLD_DEFS)
+
+    # 모든 fold에서 필요한 split 집합
+    needed_splits: set[str] = set()
+    for fd in fold_defs:
+        for s in fd.get("splits", []):
+            needed_splits.add(s)
+
+    # ── Step 1: split별 all_type superset 생성 ────────────────────────────
+    # train → seed+0, val → seed+1, test → seed+2 로 분리
+    _split_seed_offset = {"train": 0, "val": 1, "test": 2}
+    superset: dict[str, dict[str, np.ndarray]] = {}
+
+    for split in sorted(needed_splits):
+        split_seed = base_seed + _split_seed_offset.get(split, 3)
+        split_dir = pretrain_dir / split
+
+        X_raw = np.load(split_dir / "X.npy")
+        tf = np.load(split_dir / "time_feat.npy")
+
+        corrupted, type_labels = _inject_with_type_labels(
+            X_raw, cfg, scaler, seed=split_seed
+        )
+        binary_labels = (type_labels >= 0).astype(np.int32)
+
+        superset[split] = {
+            "X":            corrupted,
+            "time_feat":    tf,
+            "binary_label": binary_labels,
+            "type_label":   type_labels,
+        }
+
+    # ── Step 2: fold별 필터링 + 저장 ─────────────────────────────────────
+    stats: dict = {}
+
+    for fd in fold_defs:
+        fold_name = fd["name"]
+        unseen_type: str | None = fd.get("unseen_type")
+        splits = fd.get("splits", [])
+
+        fold_stats: dict = {}
+        for split in splits:
+            data = superset[split]
+
+            if unseen_type is not None:
+                unseen_idx = TYPE_IDX[unseen_type]
+                keep = data["type_label"] != unseen_idx
+            else:
+                keep = np.ones(len(data["X"]), dtype=bool)
+
+            X_f  = data["X"][keep]
+            tf_f = data["time_feat"][keep]
+            bl_f = data["binary_label"][keep]
+            tl_f = data["type_label"][keep]
+
+            out_dir = output_dir / fold_name / split
+            out_dir.mkdir(parents=True, exist_ok=True)
+            np.save(out_dir / "X.npy",            X_f.astype(np.float32))
+            np.save(out_dir / "time_feat.npy",    tf_f.astype(np.float32))
+            np.save(out_dir / "binary_label.npy", bl_f.astype(np.int32))
+            np.save(out_dir / "type_label.npy",   tl_f.astype(np.int32))
+
+            n_normal = int((tl_f == LABEL_NORMAL).sum())
+            attack_counts = {
+                name: int((tl_f == idx).sum())
+                for name, idx in TYPE_IDX.items()
+                if int((tl_f == idx).sum()) > 0
+            }
+            fold_stats[split] = {
+                "total":   len(X_f),
+                "normal":  n_normal,
+                "attacks": attack_counts,
+            }
+
+        stats[fold_name] = fold_stats
+
+    return stats

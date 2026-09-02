@@ -1,38 +1,76 @@
-# 합성 이상치 주입 설정 (레이블이 없는 데이터에서 파이프라인 검증용)
-# 정상 데이터(주로 test split)에 인위적으로 이상 패턴을 주입하고,
-# 주입 위치를 정답 레이블 삼아 auroc/auprc/f1/precision_at_k 등을 계산한다.
+# downstream fold 데이터 생성 설정
+# scripts/prepare_downstream_data.py 가 이 파일을 읽어 6개 fold를 한 번에 생성한다.
 #
-# 중요: 모든 변조는 inverse_transform → 변조 → transform 순으로
-#       원본(kWh) 스케일에서 적용한다.
+# 생성 원칙:
+#   1. 먼저 all_type superset(Normal + 5종)을 split별로 한 번만 생성
+#   2. unseen_X fold는 all_type superset에서 타입 X를 필터링해 제거 (재주입 없음)
+#   → fold 간 공유 유형의 샘플이 바이트 단위로 동일하게 유지됨
+#
+# 모든 변조는 scaler.inverse_transform → 변조 → scaler.transform 순으로
+# 원본(kWh) 스케일에서 적용한다 (z-score 위 배율 적용 시 물리적 의미 왜곡).
 
-source_split: "test"
-output_dir: data/processed/synthetic_eval
 seed: 42
+pretrain_dir: data/processed/pretrain       # stride=1 윈도우 (overlap 포함)
+scaler_path:  data/processed/scaler.joblib
+output_dir:   data/processed/downstream
 
-injection_ratio: 0.1    # 전체 윈도우 중 이상치를 주입할 비율
+injection_ratio: 0.1   # 전체 윈도우 중 attack 주입 비율 (Normal:Attack ≈ 9:1)
+                       # 비율이 적절한지는 생성 후 class balance 확인 필요
 
+# ── 5종 공격 파라미터 (attack_injection.py 함수 시그니처 기준) ─────────────
 anomaly_types:
-  - type: "scale_down"          # 사용량 축소 조작 (계량기 조작/절취 흉내)
-    prob: 0.2
-    scale_factor: [0.3, 0.7]   # 원본 raw값에 elementwise 곱 — 굴곡 유지, 크기만 축소
-    duration_steps: [8, 48]    # 2~12시간 (15분 단위 step)
 
-  - type: "ramp"                # V자형 드리프트 (센서 캘리브레이션 이슈)
+  - type: scale_down            # 구간 raw값에 scale_factor를 elementwise 곱
     prob: 0.2
-    scale_start: 1.0            # V자 시작/끝 배율 (1.0 = 원본 유지)
-    trough_scale: [0.2, 0.6]   # V자 최저점 배율 (20~60%까지 선형 감소 후 복귀)
+    scale_factor: [0.3, 0.7]   # 30~70%로 축소
+    duration_steps: [8, 48]    # 2~12시간
+
+  - type: ramp                  # V자 드리프트: scale_start → trough → scale_start
+    prob: 0.2
+    scale_start: 1.0
+    trough_scale: [0.2, 0.6]   # V자 최저점 배율 범위
     duration_steps: [4, 48]    # 1~12시간
 
-  - type: "pulse_plateau"       # 장시간 완만한 상승 후 유지 (부하 주입/분산에너지 역류 등)
+  - type: pulse_plateau         # 구간 시작 직전 값의 magnitude배로 유지
     prob: 0.2
-    magnitude: [1.5, 2.5]      # 구간 시작 직전 값의 1.5~2.5배로 계단식 상승 후 유지
-    duration_steps: [8, 48]    # 2~12시간
+    magnitude: [1.5, 2.5]
+    duration_steps: [8, 48]
 
-  - type: "replay"              # 재생 공격 — 동일 윈도우의 다른 시점 구간 복사 붙여넣기
+  - type: replay                # 동일 윈도우 비겹침 구간 복사 → 경계 불연속 신호
     prob: 0.2
-    duration_steps: [8, 48]    # 2~12시간
+    duration_steps: [8, 48]
 
-  - type: "instant_spike"       # 순간 스파이크 (이상 부하 급증)
+  - type: instant_spike         # 로컬 평균 × (1 + magnitude)
     prob: 0.2
-    magnitude: [0.9, 1.3]      # 윈도우 로컬 평균 대비 +90~130%
+    magnitude: [0.9, 1.3]
     duration_steps: [1, 2]
+
+# ── fold 정의 ──────────────────────────────────────────────────────────────
+# all_type: train/val/test 전부 생성 (Normal + 5종 전부)
+# unseen_X: train/val만 생성, unseen_type X를 제외한 Normal + 4종
+# test는 all_type/test 하나를 6개 fold 모두가 공유 (재생성 없음)
+
+folds:
+  - name: all_type
+    unseen_type: null
+    splits: [train, val, test]
+
+  - name: unseen_scale_down
+    unseen_type: scale_down
+    splits: [train, val]
+
+  - name: unseen_ramp
+    unseen_type: ramp
+    splits: [train, val]
+
+  - name: unseen_pulse_plateau
+    unseen_type: pulse_plateau
+    splits: [train, val]
+
+  - name: unseen_replay
+    unseen_type: replay
+    splits: [train, val]
+
+  - name: unseen_instant_spike
+    unseen_type: instant_spike
+    splits: [train, val]
