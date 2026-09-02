@@ -194,6 +194,7 @@ def _train_epoch(
     encoder, det_head, cls_head, loader,
     det_loss_fn, cls_loss_fn, type_to_class,
     det_optim, cls_optim, device,
+    det_sched=None, cls_sched=None,
 ) -> dict[str, float]:
     det_head.train()
     cls_head.train()
@@ -209,6 +210,12 @@ def _train_epoch(
             det_loss_fn, cls_loss_fn, type_to_class,
             det_optim, cls_optim,
         )
+        # batch당 scheduler step (warmup_steps가 batch 기준이므로 여기서 호출)
+        if det_sched is not None:
+            det_sched.step()
+        if cls_sched is not None and result["cls_loss"] is not None:
+            cls_sched.step()
+
         det_sum += result["det_loss"]
         if result["cls_loss"] is not None:
             cls_sum += result["cls_loss"]
@@ -378,16 +385,13 @@ def train_fold(
             encoder, det_head, cls_head, train_loader,
             det_loss_fn, cls_loss_fn, type_to_class,
             det_optim, cls_optim, device,
+            det_sched=det_sched if epoch < det_epochs else None,
+            cls_sched=cls_sched if epoch < cls_epochs else None,
         )
         val_losses = _val_epoch(
             encoder, det_head, cls_head, val_loader,
             det_loss_fn, cls_loss_fn, type_to_class, device,
         )
-
-        if epoch < det_epochs:
-            det_sched.step()
-        if epoch < cls_epochs:
-            cls_sched.step()
 
         det_is_best = val_losses["det"] < best_det_val
         cls_is_best = (
