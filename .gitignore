@@ -12,10 +12,10 @@ data/processed/**
 !data/processed/**/.gitkeep
 
 # ── 체크포인트 / 텐서보드 이벤트 (대용량 바이너리) ─────────────
-checkpoints/**/*.pt
-checkpoints/**/*.pth
-logs/**/*.tfevents.*
-logs/**/*.log
+# checkpoints/**/*.pt
+# checkpoints/**/*.pth
+# logs/**/*.tfevents.*
+# logs/**/*.log
 
 # ── 출력물 (재현 가능, git 제외) ────────────────────────────────
 outputs/figures/**
