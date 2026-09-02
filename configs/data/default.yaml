@@ -27,6 +27,7 @@ gap_threshold_hours: 6.0    # 이 시간 이상 공백이면 별도 segment로 �
 
 window_size: 96               # 96 * 15min = 24시간
 stride: 1                     # sliding window stride
+forecast_horizon: 8           # 8 * 15min = 2시간 앞 예측 (forecasting 보조 objective)
 train_val_test_split: [0.7, 0.15, 0.15]
 
 scaler: "standard"            # standard | minmax, 채널별 fit

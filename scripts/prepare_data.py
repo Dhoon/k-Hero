@@ -6,15 +6,15 @@ Usage:
 
 출력 구조:
     data/processed/
-        train/
-            X.npy           (N_train, window_size, n_features)
-            time_feat.npy   (N_train, window_size, 2)  ← hour_of_day, day_of_week
-        val/
-            X.npy
-            time_feat.npy
-        test/
-            X.npy
-            time_feat.npy
+        pretrain/
+            train/
+                X.npy             (N_train, window_size, n_features)
+                time_feat.npy     (N_train, window_size, 2)  ← hour_of_day, day_of_week
+                future_target.npy (N_train, forecast_horizon, n_features)
+            val/
+                X.npy, time_feat.npy, future_target.npy
+            test/
+                X.npy, time_feat.npy, future_target.npy
         scaler.joblib       ← train으로만 fit한 StandardScalerND
 """
 from __future__ import annotations
@@ -49,12 +49,14 @@ def _save_split(split_dir: Path, arrays: dict) -> None:
     split_dir.mkdir(parents=True, exist_ok=True)
     np.save(split_dir / "X.npy", arrays["X"])
     np.save(split_dir / "time_feat.npy", arrays["time_feat"])
+    np.save(split_dir / "future_target.npy", arrays["future_target"])
 
 
 def _report_split(name: str, arrays: dict, feature_names: list[str]) -> None:
     X = arrays["X"]
     tf = arrays["time_feat"]
-    print(f"\n  [{name}]  windows={X.shape[0]}  shape={X.shape}")
+    ft = arrays["future_target"]
+    print(f"\n  [{name}]  windows={X.shape[0]}  X={X.shape}  future_target={ft.shape}")
     nan_count = int(np.isnan(X).sum())
     print(f"    NaN 개수: {nan_count}")
     print(f"    채널별 정규화 후 통계 (mean / std):")
@@ -73,13 +75,14 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     cfg = _load_cfg(config_path)
 
     raw_dir = Path(cfg["raw_dir"])
-    processed_dir = Path(cfg["processed_dir"])
+    processed_dir = Path(cfg["processed_dir"]) / "pretrain"
     feature_cols: list[str] = cfg["feature_cols"]
     resample_freq: str = cfg.get("resample_freq", "15min")
     fill_method: str = cfg.get("fill_method", "linear")
     gap_threshold_hours: float = cfg.get("gap_threshold_hours", 6.0)
     window_size: int = cfg["window_size"]
     stride: int = cfg.get("stride", 1)
+    forecast_horizon: int = cfg.get("forecast_horizon", 0)
     ratios: list[float] = cfg["train_val_test_split"]
 
     print("=" * 60)
@@ -88,7 +91,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     print(f"  config          : {config_path}")
     print(f"  raw_dir         : {raw_dir}")
     print(f"  feature         : {feature_cols}")
-    print(f"  window          : size={window_size}, stride={stride}")
+    print(f"  window          : size={window_size}, stride={stride}, forecast_horizon={forecast_horizon}")
     print(f"  split           : {ratios}")
     print(f"  gap_threshold   : {gap_threshold_hours}h")
 
@@ -113,6 +116,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     # ------------------------------------------------------------------
     print("\n[2/5] 전처리 (datetime 파싱 → gap 분리 → segment별 리샘플링)")
     meter_segments: dict[str, list] = {}
+    scaler_dir = Path(cfg["processed_dir"])
     for meter_id, df_raw in meter_dfs_raw.items():
         segments = preprocess_meter(
             df_raw,
@@ -121,7 +125,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
             gap_threshold_hours=gap_threshold_hours,
             window_size=window_size,
             meter_id=meter_id,
-            status_events_dir=processed_dir / "status_events",
+            status_events_dir=scaler_dir / "status_events",
         )
         meter_segments[meter_id] = segments
         total_rows = sum(len(s) for s in segments)
@@ -140,7 +144,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
             print(f"  [스킵] meter={meter_id}: 유효 segment 없음")
             continue
         splits = process_meter_segments(
-            segments, feature_cols, window_size, stride, ratios
+            segments, feature_cols, window_size, stride, ratios, forecast_horizon
         )
         n_train = splits["train"]["X"].shape[0]
         n_val = splits["val"]["X"].shape[0]
@@ -165,7 +169,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     )
 
     # ------------------------------------------------------------------
-    # 4. Scaler fit (train 전용) → transform 전체
+    # 4. Scaler fit (train 전용) → transform 전체 (X + future_target)
     # ------------------------------------------------------------------
     print("\n[4/5] 채널별 StandardScaler fit (train 전용) + transform")
     scaler = StandardScalerND()
@@ -173,7 +177,13 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     combined["val"]["X"] = scaler.transform(combined["val"]["X"])
     combined["test"]["X"] = scaler.transform(combined["test"]["X"])
 
-    scaler_path = processed_dir / "scaler.joblib"
+    # future_target도 같은 채널 공간이므로 동일 scaler로 정규화
+    for split_name in ("train", "val", "test"):
+        combined[split_name]["future_target"] = scaler.transform(
+            combined[split_name]["future_target"]
+        )
+
+    scaler_path = scaler_dir / "scaler.joblib"
     scaler.save(scaler_path)
     print(f"  scaler 저장: {scaler_path}")
     scaler.report(feature_names=feature_cols)
@@ -181,16 +191,20 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
     # ------------------------------------------------------------------
     # 5. 저장
     # ------------------------------------------------------------------
-    print("\n[5/5] data/processed/ 저장")
+    print("\n[5/5] data/processed/pretrain/ 저장")
     for split_name in ("train", "val", "test"):
         split_dir = processed_dir / split_name
         _save_split(split_dir, combined[split_name])
         print(
-            f"  {split_name}/X.npy         {combined[split_name]['X'].shape}"
+            f"  {split_name}/X.npy              {combined[split_name]['X'].shape}"
             f"  {combined[split_name]['X'].nbytes / 1e6:.1f} MB"
         )
         print(
-            f"  {split_name}/time_feat.npy {combined[split_name]['time_feat'].shape}"
+            f"  {split_name}/time_feat.npy      {combined[split_name]['time_feat'].shape}"
+        )
+        print(
+            f"  {split_name}/future_target.npy  {combined[split_name]['future_target'].shape}"
+            f"  {combined[split_name]['future_target'].nbytes / 1e6:.1f} MB"
         )
 
     # ------------------------------------------------------------------

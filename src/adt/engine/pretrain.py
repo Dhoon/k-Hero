@@ -59,7 +59,7 @@ def _train_epoch(
     total_loss = 0.0
     params = list(encoder.parameters()) + list(head.parameters())
 
-    for x, time_feat in tqdm(loader, desc=f"  train ep{epoch+1}", leave=False, ncols=80):
+    for x, time_feat, _future in tqdm(loader, desc=f"  train ep{epoch+1}", leave=False, ncols=80):
         x = x.to(device)
         time_feat = time_feat.to(device)
 
@@ -92,7 +92,7 @@ def _val_epoch(
     head.eval()
     total_loss = 0.0
 
-    for x, time_feat in loader:
+    for x, time_feat, _future in loader:
         x = x.to(device)
         time_feat = time_feat.to(device)
         mask = generate_mask(x, epoch, ssl_cfg)

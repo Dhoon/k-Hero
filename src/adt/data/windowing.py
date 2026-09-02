@@ -1,12 +1,14 @@
 """Sliding window → (N, T, C) 텐서 생성 + 시간 특징 추출.
 
 Transformer Input 구성 (pretrain_methodology.md §2):
-  - X        : (N, window_size, n_features)  — 채널별 정규화된 전력값
-  - time_feat: (N, window_size, 2)           — hour_of_day (0-23), day_of_week (0-6)
+  - X            : (N, window_size, n_features)  — 채널별 정규화된 전력값
+  - time_feat    : (N, window_size, 2)           — hour_of_day (0-23), day_of_week (0-6)
+  - future_target: (N, forecast_horizon, n_features) — forecasting 보조 objective용 ground truth
 
 윈도우 경계 규칙:
   - 계량기 경계를 넘는 윈도우 생성 금지
   - segment 경계를 넘는 윈도우 생성 금지 (gap 기반 분리 후 segment별 독립 처리)
+  - future_target h 스텝이 같은 segment 안에서 채워지지 않으면 해당 윈도우 drop
 train/val/test 분할은 시간 순서를 지켜서 수행 (셔플 금지 — leakage 방지).
 """
 from __future__ import annotations
@@ -22,8 +24,9 @@ import pandas as pd
 # -------------------------------------------------------------------------
 
 class SplitArrays(TypedDict):
-    X: np.ndarray           # (N, window_size, C)
-    time_feat: np.ndarray   # (N, window_size, 2)
+    X: np.ndarray             # (N, window_size, C)
+    time_feat: np.ndarray     # (N, window_size, 2)
+    future_target: np.ndarray # (N, forecast_horizon, C)
 
 
 # -------------------------------------------------------------------------
@@ -55,28 +58,49 @@ def make_windows(
     time_feats: np.ndarray,
     window_size: int,
     stride: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    forecast_horizon: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """슬라이딩 윈도우 생성.
 
+    forecast_horizon > 0 이면 각 window 뒤에 이어지는 h 스텝을 future_target으로
+    슬라이싱한다. 같은 segment 내에서 h 스텝을 전부 채울 수 없는 tail 윈도우는 drop.
+
     Args:
-        values   : (T, C)  — 정규화된 전력 피처
-        time_feats: (T, 2) — hour_of_day, day_of_week
-        window_size: 창 크기 (timestep)
-        stride   : 슬라이딩 보폭
+        values          : (T, C)  — 정규화된 전력 피처
+        time_feats      : (T, 2)  — hour_of_day, day_of_week
+        window_size     : 창 크기 (timestep)
+        stride          : 슬라이딩 보폭
+        forecast_horizon: 예측 horizon h (0이면 future_target은 빈 배열)
 
     Returns:
-        X        : (N, window_size, C)
-        T_feat   : (N, window_size, 2)
+        X            : (N, window_size, C)
+        T_feat       : (N, window_size, 2)
+        future_target: (N, forecast_horizon, C)  — h==0 이면 (N, 0, C)
     """
     T = len(values)
-    if T < window_size:
-        return np.empty((0, window_size, values.shape[1]), dtype=np.float32), \
-               np.empty((0, window_size, 2), dtype=np.float32)
+    C = values.shape[1]
+    min_len = window_size + forecast_horizon  # segment가 최소한 이 길이여야 window 1개 생성 가능
 
-    starts = range(0, T - window_size + 1, stride)
+    if T < min_len:
+        return (
+            np.empty((0, window_size, C), dtype=np.float32),
+            np.empty((0, window_size, 2), dtype=np.float32),
+            np.empty((0, forecast_horizon, C), dtype=np.float32),
+        )
+
+    # i + window_size + h <= T  →  i <= T - window_size - h
+    starts = range(0, T - min_len + 1, stride)
     X = np.stack([values[i : i + window_size] for i in starts]).astype(np.float32)
     T_feat = np.stack([time_feats[i : i + window_size] for i in starts]).astype(np.float32)
-    return X, T_feat
+
+    if forecast_horizon > 0:
+        future = np.stack(
+            [values[i + window_size : i + window_size + forecast_horizon] for i in starts]
+        ).astype(np.float32)
+    else:
+        future = np.empty((len(X), 0, C), dtype=np.float32)
+
+    return X, T_feat, future
 
 
 # -------------------------------------------------------------------------
@@ -87,13 +111,15 @@ def split_windows(
     X: np.ndarray,
     time_feat: np.ndarray,
     ratios: list[float],
+    future_target: np.ndarray | None = None,
 ) -> dict[str, SplitArrays]:
     """시간 순서를 지켜 train/val/test 분할 (셔플 금지).
 
     Args:
-        X        : (N, window_size, C)
-        time_feat: (N, window_size, 2)
-        ratios   : [train_ratio, val_ratio, test_ratio], 합계 1.0
+        X            : (N, window_size, C)
+        time_feat    : (N, window_size, 2)
+        ratios       : [train_ratio, val_ratio, test_ratio], 합계 1.0
+        future_target: (N, h, C) 또는 None (None이면 빈 배열로 처리)
 
     Returns:
         {'train': SplitArrays, 'val': SplitArrays, 'test': SplitArrays}
@@ -103,18 +129,24 @@ def split_windows(
     n_train = int(N * ratios[0])
     n_val = int(N * ratios[1])
 
+    if future_target is None:
+        future_target = np.empty((N, 0, X.shape[2]), dtype=np.float32)
+
     return {
         "train": {
             "X": X[:n_train],
             "time_feat": time_feat[:n_train],
+            "future_target": future_target[:n_train],
         },
         "val": {
             "X": X[n_train : n_train + n_val],
             "time_feat": time_feat[n_train : n_train + n_val],
+            "future_target": future_target[n_train : n_train + n_val],
         },
         "test": {
             "X": X[n_train + n_val :],
             "time_feat": time_feat[n_train + n_val :],
+            "future_target": future_target[n_train + n_val :],
         },
     }
 
@@ -129,22 +161,28 @@ def _process_single_segment(
     window_size: int,
     stride: int,
     ratios: list[float],
+    forecast_horizon: int = 0,
 ) -> dict[str, SplitArrays] | None:
     """단일 segment DataFrame → split별 윈도우. 윈도우가 0개면 None 반환."""
     timestamps = pd.DatetimeIndex(seg_df["일자시간"])
     values = seg_df[feature_cols].to_numpy(dtype=np.float32)
     time_feats = extract_time_features(timestamps)
 
-    X, T_feat = make_windows(values, time_feats, window_size, stride)
+    X, T_feat, future = make_windows(values, time_feats, window_size, stride, forecast_horizon)
     if len(X) == 0:
         return None
-    return split_windows(X, T_feat, ratios)
+    return split_windows(X, T_feat, ratios, future)
 
 
-def _empty_splits(window_size: int, n_features: int) -> dict[str, SplitArrays]:
+def _empty_splits(
+    window_size: int,
+    n_features: int,
+    forecast_horizon: int = 0,
+) -> dict[str, SplitArrays]:
     empty_X = np.empty((0, window_size, n_features), dtype=np.float32)
     empty_t = np.empty((0, window_size, 2), dtype=np.float32)
-    return {s: {"X": empty_X, "time_feat": empty_t} for s in ("train", "val", "test")}
+    empty_f = np.empty((0, forecast_horizon, n_features), dtype=np.float32)
+    return {s: {"X": empty_X, "time_feat": empty_t, "future_target": empty_f} for s in ("train", "val", "test")}
 
 
 def process_meter_segments(
@@ -153,36 +191,41 @@ def process_meter_segments(
     window_size: int,
     stride: int,
     ratios: list[float],
+    forecast_horizon: int = 0,
 ) -> dict[str, SplitArrays]:
     """여러 segment(gap 분리 후) → 각각 windowing → split별 concat.
 
     segment 경계를 넘는 윈도우는 생성되지 않는다.
+    forecast_horizon > 0 이면 각 segment 끝 h 개 window가 추가로 drop된다.
     각 segment 내에서 시간 순서 유지 split 후 전체 concat.
 
     Args:
-        segments    : preprocessing.preprocess_meter()가 반환한 segment DataFrame 리스트
-        feature_cols: 사용할 전력 채널 컬럼명
-        window_size : 창 크기
-        stride      : 슬라이딩 보폭
-        ratios      : [train, val, test] 비율
+        segments        : preprocessing.preprocess_meter()가 반환한 segment DataFrame 리스트
+        feature_cols    : 사용할 전력 채널 컬럼명
+        window_size     : 창 크기
+        stride          : 슬라이딩 보폭
+        ratios          : [train, val, test] 비율
+        forecast_horizon: forecasting 보조 objective horizon h
 
     Returns:
         {'train': SplitArrays, 'val': SplitArrays, 'test': SplitArrays}
     """
     if not segments:
-        return _empty_splits(window_size, len(feature_cols))
+        return _empty_splits(window_size, len(feature_cols), forecast_horizon)
 
     all_splits = []
     for seg_df in segments:
         missing = [c for c in feature_cols if c not in seg_df.columns]
         if missing:
             continue
-        result = _process_single_segment(seg_df, feature_cols, window_size, stride, ratios)
+        result = _process_single_segment(
+            seg_df, feature_cols, window_size, stride, ratios, forecast_horizon
+        )
         if result is not None:
             all_splits.append(result)
 
     if not all_splits:
-        return _empty_splits(window_size, len(feature_cols))
+        return _empty_splits(window_size, len(feature_cols), forecast_horizon)
 
     return concat_meter_splits(all_splits)
 
@@ -199,8 +242,10 @@ def concat_meter_splits(
     for split in ("train", "val", "test"):
         Xs = [m[split]["X"] for m in meter_splits if len(m[split]["X"]) > 0]
         Ts = [m[split]["time_feat"] for m in meter_splits if len(m[split]["time_feat"]) > 0]
+        Fs = [m[split]["future_target"] for m in meter_splits if len(m[split]["future_target"]) > 0]
         result[split] = {
             "X": np.concatenate(Xs, axis=0) if Xs else np.empty((0,), dtype=np.float32),
             "time_feat": np.concatenate(Ts, axis=0) if Ts else np.empty((0,), dtype=np.float32),
+            "future_target": np.concatenate(Fs, axis=0) if Fs else np.empty((0,), dtype=np.float32),
         }
     return result
