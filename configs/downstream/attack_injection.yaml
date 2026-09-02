@@ -1,0 +1,38 @@
+# 합성 이상치 주입 설정 (레이블이 없는 데이터에서 파이프라인 검증용)
+# 정상 데이터(주로 test split)에 인위적으로 이상 패턴을 주입하고,
+# 주입 위치를 정답 레이블 삼아 auroc/auprc/f1/precision_at_k 등을 계산한다.
+#
+# 중요: 모든 변조는 inverse_transform → 변조 → transform 순으로
+#       원본(kWh) 스케일에서 적용한다.
+
+source_split: "test"
+output_dir: data/processed/synthetic_eval
+seed: 42
+
+injection_ratio: 0.1    # 전체 윈도우 중 이상치를 주입할 비율
+
+anomaly_types:
+  - type: "scale_down"          # 사용량 축소 조작 (계량기 조작/절취 흉내)
+    prob: 0.2
+    scale_factor: [0.3, 0.7]   # 원본 raw값에 elementwise 곱 — 굴곡 유지, 크기만 축소
+    duration_steps: [8, 48]    # 2~12시간 (15분 단위 step)
+
+  - type: "ramp"                # V자형 드리프트 (센서 캘리브레이션 이슈)
+    prob: 0.2
+    scale_start: 1.0            # V자 시작/끝 배율 (1.0 = 원본 유지)
+    trough_scale: [0.2, 0.6]   # V자 최저점 배율 (20~60%까지 선형 감소 후 복귀)
+    duration_steps: [4, 48]    # 1~12시간
+
+  - type: "pulse_plateau"       # 장시간 완만한 상승 후 유지 (부하 주입/분산에너지 역류 등)
+    prob: 0.2
+    magnitude: [1.5, 2.5]      # 구간 시작 직전 값의 1.5~2.5배로 계단식 상승 후 유지
+    duration_steps: [8, 48]    # 2~12시간
+
+  - type: "replay"              # 재생 공격 — 동일 윈도우의 다른 시점 구간 복사 붙여넣기
+    prob: 0.2
+    duration_steps: [8, 48]    # 2~12시간
+
+  - type: "instant_spike"       # 순간 스파이크 (이상 부하 급증)
+    prob: 0.2
+    magnitude: [0.9, 1.3]      # 윈도우 로컬 평균 대비 +90~130%
+    duration_steps: [1, 2]

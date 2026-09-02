@@ -1,6 +1,0 @@
-{
-  "threshold": 0.011662347242236137,
-  "method": "percentile",
-  "value": 99.0,
-  "best_val_loss": 0.001679332891227745
-}

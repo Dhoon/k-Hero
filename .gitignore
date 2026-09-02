@@ -1,13 +1,37 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-data/raw/*
-data/interim/*
-data/processed/*
-!data/raw/.gitkeep
-!data/interim/.gitkeep
-!data/processed/.gitkeep
-!data/processed/synthetic_eval/
-data/processed/synthetic_eval/*
-!data/processed/synthetic_eval/.gitkeep
 .env
+
+# ── 원본 / 중간 데이터 ──────────────────────────────────────────
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+
+# ── processed 데이터 (.gitkeep만 추적) ──────────────────────────
+data/processed/**
+!data/processed/**/
+!data/processed/**/.gitkeep
+
+# ── 체크포인트 / 텐서보드 이벤트 (대용량 바이너리) ─────────────
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+logs/**/*.tfevents.*
+logs/**/*.log
+
+# ── 출력물 (재현 가능, git 제외) ────────────────────────────────
+outputs/figures/**
+!outputs/figures/**/
+!outputs/figures/**/.gitkeep
+outputs/scores/**
+!outputs/scores/**/
+!outputs/scores/**/.gitkeep
+
+# ── archive: 코드/설정은 git 포함, 데이터·체크포인트는 제외 ────
+archive/data/**
+!archive/data/**/
+!archive/data/**/.gitkeep
+archive/checkpoints/**
+!archive/checkpoints/**/
+!archive/checkpoints/**/.gitkeep

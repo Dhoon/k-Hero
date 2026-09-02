@@ -8,7 +8,7 @@ import torch
 
 from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.positional_encoding import TemporalEncoding
-from src.adt.models.pretrain_head import MaskedReconstructionHead
+from src.adt.models.heads.pretrain_head import MaskedReconstructionHead
 from src.adt.ssl.masking import generate_mask, get_mask_ratio, segment_mask, channel_mask
 from src.adt.ssl.losses import masked_reconstruction_loss
 

@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from src.adt.data.dataset import build_dataloader
 from src.adt.models.encoder import TimeSeriesTransformerEncoder
-from src.adt.models.pretrain_head import MaskedReconstructionHead
+from src.adt.models.heads.pretrain_head import MaskedReconstructionHead
 from src.adt.ssl.losses import masked_reconstruction_loss
 from src.adt.ssl.masking import generate_mask, get_mask_ratio
 from src.adt.utils.checkpoint import save_checkpoint
