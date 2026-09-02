@@ -1,7 +1,6 @@
-"""분류 헤드 — Encoder 출력에서 window-level 이진 분류.
+"""다중 클래스 분류 헤드 — Attack type classification.
 
-forward는 raw logit을 반환. sigmoid/threshold는 호출부에서 처리.
-BCEWithLogitsLoss와 함께 사용.
+forward는 raw logits(B, num_classes)를 반환. CrossEntropyLoss와 함께 사용.
 """
 from __future__ import annotations
 
@@ -10,34 +9,29 @@ import torch.nn as nn
 
 
 class ClassificationHead(nn.Module):
-    """Mean/Max pooling + MLP 이진 분류 헤드.
-
-    z = concat[MeanPool(H), MaxPool(H)]  (pooling="mean_max")
-    logit = MLP(z)  → BCEWithLogitsLoss
+    """MeanPool+MaxPool concat → MLP → num_classes logits.
 
     Args:
         d_model   : Encoder 출력 차원
-        hidden_dim: MLP 중간 차원 (config로 제어, 기본 64)
+        num_classes: 분류 클래스 수 (all_type=5, unseen_X=4)
+        hidden_dim: MLP 중간 차원
         dropout   : Dropout 확률
-        pooling   : "mean_max" | "mean" | "max"
     """
 
     def __init__(
         self,
         d_model: int = 128,
+        num_classes: int = 5,
         hidden_dim: int = 64,
         dropout: float = 0.1,
-        pooling: str = "mean_max",
     ) -> None:
         super().__init__()
-        self.pooling = pooling
-        pool_dim = 2 * d_model if pooling == "mean_max" else d_model
-
+        self.num_classes = num_classes
         self.mlp = nn.Sequential(
-            nn.Linear(pool_dim, hidden_dim),
+            nn.Linear(2 * d_model, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(hidden_dim, num_classes),
         )
         self._init_weights()
 
@@ -50,18 +44,10 @@ class ClassificationHead(nn.Module):
     def forward(self, H: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            H: (B, L, d_model) — Encoder 출력 (mask=None로 통과한 것)
+            H: (B, L, d_model) — frozen encoder 출력 (Attack 샘플만)
 
         Returns:
-            (B,) — raw attack logit
+            (B, num_classes) raw logits — CrossEntropyLoss 입력
         """
-        if self.pooling == "mean_max":
-            z = torch.cat([H.mean(dim=1), H.max(dim=1).values], dim=-1)
-        elif self.pooling == "mean":
-            z = H.mean(dim=1)
-        elif self.pooling == "max":
-            z = H.max(dim=1).values
-        else:
-            raise ValueError(f"pooling={self.pooling!r} 지원 안 함 (mean_max | mean | max)")
-
-        return self.mlp(z).squeeze(-1)  # (B,)
+        z = torch.cat([H.mean(dim=1), H.max(dim=1).values], dim=-1)  # (B, 2*d_model)
+        return self.mlp(z)  # (B, num_classes)

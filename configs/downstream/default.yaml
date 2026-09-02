@@ -1,0 +1,56 @@
+# Downstream Detection + Classification 통합 학습/평가 설정
+# encoder 구조는 configs/pretrain/default.yaml과 동일하게 유지
+
+data_config: configs/data/default.yaml
+
+# pretrain checkpoint (encoder만 로드)
+pretrain_ckpt: checkpoints/pretrain/best.pt
+
+# downstream fold 데이터 디렉토리
+downstream_dir: data/processed/downstream
+
+seed: 42
+
+# ── encoder 구조 (pretrain과 동일하게 맞출 것) ────────────────────────────
+model:
+  d_model: 128
+  n_heads: 4
+  n_layers: 4
+  d_ff: 256
+  dropout: 0.1
+
+# ── Detection 헤드 학습 설정 ──────────────────────────────────────────────
+detection:
+  hidden_dim: 64
+  dropout: 0.1
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 100
+  ckpt_dir: checkpoints/downstream
+  log_dir:  logs/downstream
+
+# ── Classification 헤드 학습 설정 ─────────────────────────────────────────
+classification:
+  hidden_dim: 64
+  dropout: 0.1
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 100
+  ckpt_dir: checkpoints/downstream
+  log_dir:  logs/downstream
+
+# ── 평가 결과 저장 디렉토리 ───────────────────────────────────────────────
+output_dir: outputs/scores
+
+# ── fold 목록 ─────────────────────────────────────────────────────────────
+folds:
+  - all_type
+  - unseen_scale_down
+  - unseen_ramp
+  - unseen_pulse_plateau
+  - unseen_replay
+  - unseen_instant_spike

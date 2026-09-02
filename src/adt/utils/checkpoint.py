@@ -52,3 +52,34 @@ def load_checkpoint(
         scheduler.load_state_dict(state["scheduler"])
 
     return state.get("epoch", 0), state.get("best_val_loss", float("inf"))
+
+
+def load_encoder_frozen(
+    ckpt_path: str | Path | None,
+    encoder: nn.Module,
+) -> nn.Module:
+    """pretrain checkpoint에서 encoder 가중치를 로드하고 eval+freeze.
+
+    ckpt_path가 None이거나 파일이 없으면 random init 가중치로 freeze만 수행
+    (테스트/smoke 용도).
+
+    Args:
+        ckpt_path: pretrain best.pt 경로 (None이면 skip)
+        encoder  : TimeSeriesTransformerEncoder 인스턴스
+
+    Returns:
+        eval() + requires_grad=False 상태의 encoder (in-place 수정 후 반환)
+    """
+    if ckpt_path is not None:
+        ckpt_path = Path(ckpt_path)
+        if ckpt_path.exists():
+            state = torch.load(ckpt_path, map_location="cpu")
+            # pretrain 체크포인트는 {"encoder": state_dict, ...} 구조
+            enc_state = state.get("encoder", state)
+            encoder.load_state_dict(enc_state, strict=True)
+
+    encoder.eval()
+    for p in encoder.parameters():
+        p.requires_grad_(False)
+
+    return encoder
