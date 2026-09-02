@@ -1,0 +1,125 @@
+/home/ubuntu/k-Hero/scripts/diagnose_downstream.py:348: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  sched.step()
+/home/ubuntu/k-Hero/scripts/diagnose_downstream.py:370: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  sched2.step()
+
+============================================================
+DIAG 1: encoder checkpoint
+============================================================
+  설정 경로 : /home/ubuntu/k-Hero/checkpoints/pretrain/best.pt
+  파일 크기 : 6.67 MB  [OK]
+  checkpoint keys : ['epoch', 'encoder', 'recon_head', 'forecast_head', 'optimizer', 'scheduler', 'best_val_loss', 'cfg']
+  encoder params  : 600,068
+  param norm (mean/min/max): 12.0619 / 0.4910 / 181.0194
+  best_val_loss   : 0.095793
+  saved at epoch  : 40
+  load_encoder_frozen: [OK] 정상 로드 완료
+  데이터 n_features: 4 (config d_model=128)
+
+============================================================
+DIAG 2: Normal vs Attack pooled feature 분포
+============================================================
+  전체 샘플: 82,114  Normal: 73,903  Attack: 8,211
+
+  pooled feature shape: (16, 256)
+  Normal  feature std (mean over dims): 1.270714
+  Attack  feature std (mean over dims): 1.110823
+
+  Normal mean vs Attack mean:
+    코사인 유사도 : 0.964188  (1.0 = 구분 불가, 낮을수록 분리됨)
+    L2 거리       : 8.684938
+  pairwise L2 (N×A): mean=39.0456  std=25.6660
+  intra Normal  L2: mean=43.9923
+  intra Attack  L2: mean=36.3310
+  inter/intra 비율: 0.888  (>1이면 클래스 간 분리됨, <1이면 같이 뭉침)
+
+============================================================
+DIAG 3: detection head 파라미터 변화 (10 step)
+============================================================
+  det_head param norm — before: 10.169875
+  det_head param norm — after : 10.172095  Δ=0.002219
+  [OK] det_head 파라미터 업데이트 확인
+
+  detection loss 추이 (10 step):
+    step  1: 2.331319
+    step  2: 1.924845
+    step  3: 1.211060
+    step  4: 1.728278
+    step  5: 1.392185
+    step  6: 1.393882
+    step  7: 1.714522
+    step  8: 1.224083
+    step  9: 1.837442
+    step 10: 1.235992
+  loss 변화: -1.095327  (감소 중)
+
+  classification loss 추이:
+    step  1: 4.900753
+    step  2: 5.127177
+    step  3: 1.240245
+    step  4: 3.288047
+    step  5: 5.753295
+    step  6: 2.015548
+    step  7: 3.557247
+    step  8: 2.739301
+    step  9: 2.525151
+    step 10: 2.014407
+
+============================================================
+DIAG 4: LR 스케줄러 실효 LR
+============================================================
+
+  [현재 코드] epoch당 scheduler.step() 1회
+  epochs=30  warmup_steps(설정)=100  base_lr=0.001
+  step() 총 호출 횟수: 30
+
+  epoch별 실효 LR:  (total_steps=9630 기준으로 LambdaLR 계산)
+   epoch  sched_step    lr_scale        eff_lr
+       1           0    0.000000      0.00e+00
+       2           1    0.000010      1.00e-08
+       3           2    0.000020      2.00e-08
+       4           3    0.000030      3.00e-08
+       5           4    0.000040      4.00e-08
+       6           5    0.000050      5.00e-08
+       7           6    0.000060      6.00e-08
+       8           7    0.000070      7.00e-08
+       9           8    0.000080      8.00e-08
+      10           9    0.000090      9.00e-08
+      11          10    0.000100      1.00e-07
+      12          11    0.000110      1.10e-07
+      13          12    0.000120      1.20e-07
+      14          13    0.000130      1.30e-07
+      15          14    0.000140      1.40e-07
+      16          15    0.000150      1.50e-07
+      17          16    0.000160      1.60e-07
+      18          17    0.000170      1.70e-07
+      19          18    0.000180      1.80e-07
+      20          19    0.000190      1.90e-07
+      21          20    0.000200      2.00e-07
+      22          21    0.000210      2.10e-07
+      23          22    0.000220      2.20e-07
+      24          23    0.000230      2.30e-07
+      25          24    0.000240      2.40e-07
+      26          25    0.000250      2.50e-07
+      27          26    0.000260      2.60e-07
+      28          27    0.000270      2.70e-07
+      29          28    0.000280      2.80e-07
+      30          29    0.000290      2.90e-07
+
+  [BUG] warmup_steps=100 > 총 step() 호출 수(30)
+        → warmup이 끝나지 않고 학습 종료!
+        → LR이 base_lr의 최대 30%까지만 도달
+
+  수정 방법: scheduler.step()을 epoch당이 아니라 batch당 호출하거나,
+            warmup_steps를 epoch 단위로 변경 (예: warmup_steps: 3)
+
+  [참고] batch당 step() 호출 시:
+    step=     0  lr_scale=0.000000  eff_lr=0.00e+00
+    step=    99  lr_scale=0.000990  eff_lr=9.90e-07
+    step=   100  lr_scale=0.001000  eff_lr=1.00e-06
+    step=  4815  lr_scale=0.000508  eff_lr=5.08e-07
+    step=  9629  lr_scale=0.000000  eff_lr=2.72e-14
+
+============================================================
+진단 완료
+============================================================
