@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.reconstruction_head import ReconstructionAnomalyHead
 from src.adt.models.heads.forecasting_head import ForecastingHead
-from src.adt.ssl.masking import generate_mask, get_mask_ratio
+from src.adt.ssl.masking import generate_mask
 from src.adt.ssl.losses import masked_reconstruction_loss
 
 
@@ -111,7 +111,6 @@ def _masked_mse_batch(
     xb: torch.Tensor,
     tfb: torch.Tensor,
     ssl_cfg: dict,
-    diag_epoch: int,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
     """마스킹 적용 후 masked MSE + trivial baseline MSE 반환.
@@ -123,7 +122,7 @@ def _masked_mse_batch(
     xb  = xb.to(device)
     tfb = tfb.to(device)
 
-    mask = generate_mask(xb, diag_epoch, ssl_cfg)   # (B,T) or (B,T,C)
+    mask = generate_mask(xb, ssl_cfg)   # (B,T) or (B,T,C)
 
     # encoder forward with mask
     z    = encoder(xb, tfb, mask=mask)
@@ -177,7 +176,6 @@ def diag_reconstruction_quality(
     recon_head: nn.Module,
     pretrain_val_dir: Path,
     ssl_cfg: dict,
-    diag_epoch: int,
     device: torch.device,
     n_samples: int = 200,
     batch_size: int = 64,
@@ -185,8 +183,8 @@ def diag_reconstruction_quality(
 ) -> None:
     print("\n" + "=" * 70)
     print("DIAG 1 -- 복원 품질 (masked positions only, Normal pretrain/val)")
-    mask_ratio = get_mask_ratio(diag_epoch, ssl_cfg)
-    print(f"  masking: epoch={diag_epoch}  mask_ratio={mask_ratio:.2f}  "
+    mask_ratio = ssl_cfg.get("mask_ratio", 0.40)
+    print(f"  masking: mask_ratio={mask_ratio:.2f}  "
           f"mode={ssl_cfg.get('mask_mode','mixed')}  "
           f"guard_tail={ssl_cfg.get('mask_guard_tail',0)}")
     print("=" * 70)
@@ -205,7 +203,7 @@ def diag_reconstruction_quality(
         xb   = torch.tensor(X_all[bi],  dtype=torch.float32)
         tfb  = torch.tensor(tf_all[bi], dtype=torch.float32)
         m_mse, t_mse = _masked_mse_batch(
-            encoder, recon_head, xb, tfb, ssl_cfg, diag_epoch, device
+            encoder, recon_head, xb, tfb, ssl_cfg, device
         )
         all_model_mse.append(m_mse)
         all_trivial_mse.append(t_mse)
@@ -238,7 +236,7 @@ def diag_reconstruction_quality(
         xb_dev = xb.to(device)
         tfb_dev = tfb.to(device)
 
-        mask = generate_mask(xb_dev, diag_epoch, ssl_cfg)
+        mask = generate_mask(xb_dev, ssl_cfg)
         z    = encoder(xb_dev, tfb_dev, mask=mask)
         recon = recon_head(z).squeeze(0).cpu().numpy()   # (T, C)
         orig  = xb.squeeze(0).numpy()
@@ -299,15 +297,14 @@ def diag_recon_error_distribution(
     recon_head: nn.Module,
     downstream_dir: Path,
     ssl_cfg: dict,
-    diag_epoch: int,
     device: torch.device,
     n_per_group: int = 500,
     batch_size: int = 64,
 ) -> None:
     print("\n" + "=" * 70)
     print("DIAG 2 -- Normal vs Attack masked reconstruction error + AUC-ROC")
-    mask_ratio = get_mask_ratio(diag_epoch, ssl_cfg)
-    print(f"  masking: epoch={diag_epoch}  mask_ratio={mask_ratio:.2f}  "
+    mask_ratio = ssl_cfg.get("mask_ratio", 0.40)
+    print(f"  masking: mask_ratio={mask_ratio:.2f}  "
           f"mode={ssl_cfg.get('mask_mode','mixed')}")
     print("=" * 70)
 
@@ -341,7 +338,7 @@ def diag_recon_error_distribution(
         tlb  = tl_s[start:end]
 
         m_mse, _ = _masked_mse_batch(
-            encoder, recon_head, xb, tfb, ssl_cfg, diag_epoch, device
+            encoder, recon_head, xb, tfb, ssl_cfg, device
         )
         all_model_mse.append(m_mse)
         all_labels.append(lb)
@@ -400,7 +397,6 @@ def diag_forecast_error(
     forecast_head: nn.Module,
     pretrain_val_dir: Path,
     ssl_cfg: dict,
-    diag_epoch: int,
     device: torch.device,
     n_samples: int = 400,
     batch_size: int = 64,
@@ -489,13 +485,9 @@ def main(
     ds_cfg   = yaml.safe_load(open(downstream_config, encoding="utf-8"))
     ssl_cfg  = pt_cfg["ssl"]
 
-    # curriculum 완료 이후 epoch으로 고정 (mask_ratio_end 사용)
-    curriculum_epochs = ssl_cfg.get("curriculum_epochs", 50)
-    diag_epoch = curriculum_epochs   # epoch >= curriculum_epochs -> mask_ratio_end 고정
-
-    mask_ratio = get_mask_ratio(diag_epoch, ssl_cfg)
+    mask_ratio = ssl_cfg.get("mask_ratio", 0.40)
     print(f"[setup] pretrain_config={pretrain_config}")
-    print(f"[setup] diag_epoch={diag_epoch}  -> mask_ratio={mask_ratio:.2f}")
+    print(f"[setup] mask_ratio={mask_ratio:.2f}  (fixed)")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[setup] device={device}")
@@ -511,15 +503,15 @@ def main(
     downstream_dir   = Path(ds_cfg.get("downstream_dir", "data/processed/downstream"))
 
     diag_reconstruction_quality(
-        encoder, recon_head, pretrain_val_dir, ssl_cfg, diag_epoch, device,
+        encoder, recon_head, pretrain_val_dir, ssl_cfg, device,
         n_samples=200,
     )
     diag_recon_error_distribution(
-        encoder, recon_head, downstream_dir, ssl_cfg, diag_epoch, device,
+        encoder, recon_head, downstream_dir, ssl_cfg, device,
         n_per_group=500,
     )
     diag_forecast_error(
-        encoder, forecast_head, pretrain_val_dir, ssl_cfg, diag_epoch, device,
+        encoder, forecast_head, pretrain_val_dir, ssl_cfg, device,
         n_samples=400,
     )
 

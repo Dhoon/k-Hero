@@ -10,11 +10,6 @@
   mask_mode="channel" → (B, T, C)   bool  — encoder의 (B,T,C) 경로 사용
   mask_mode="mixed"   → (B, T, C)   bool  — 두 방식을 통합 표현 (항상 3D)
 
-Curriculum schedule (mask_ratio_start → mask_ratio_end, curriculum_epochs):
-  epoch=0    → mask_ratio_start (쉬운 과제)
-  epoch≥curriculum_epochs → mask_ratio_end (고정)
-  중간       → 선형 보간
-
 mask_guard_tail (ssl_cfg 키):
   segment 마스킹 시 window 마지막 guard_tail timestep을 마스킹 후보에서 제외.
   forecasting head가 마지막 hidden state h_L을 사용하므로 anchor 구간을 보호.
@@ -23,28 +18,6 @@ mask_guard_tail (ssl_cfg 키):
 from __future__ import annotations
 
 import torch
-
-
-# -------------------------------------------------------------------------
-# Curriculum ratio
-# -------------------------------------------------------------------------
-
-def get_mask_ratio(epoch: int, ssl_cfg: dict) -> float:
-    """현재 epoch에 해당하는 mask ratio 반환 (curriculum 선형 보간).
-
-    Args:
-        epoch  : 현재 epoch (0-indexed)
-        ssl_cfg: pretrain yaml의 ssl 섹션
-
-    Returns:
-        float in [mask_ratio_start, mask_ratio_end]
-    """
-    start: float = ssl_cfg.get("mask_ratio_start", 0.15)
-    end: float = ssl_cfg.get("mask_ratio_end", 0.40)
-    curr_epochs: int = ssl_cfg.get("curriculum_epochs", 50)
-
-    progress = min(epoch / max(curr_epochs, 1), 1.0)
-    return start + progress * (end - start)
 
 
 # -------------------------------------------------------------------------
@@ -179,12 +152,11 @@ def mixed_mask(
     return mask  # (B, T, C)
 
 
-def generate_mask(x: torch.Tensor, epoch: int, ssl_cfg: dict) -> torch.Tensor:
+def generate_mask(x: torch.Tensor, ssl_cfg: dict) -> torch.Tensor:
     """설정에 따라 마스크를 생성하는 메인 인터페이스.
 
     Args:
         x      : (B, T, C)  — 입력 텐서 (shape/device 참조만)
-        epoch  : 현재 epoch
         ssl_cfg: pretrain yaml의 ssl 섹션
                  mask_guard_tail 키가 있으면 segment 마스킹에 적용
 
@@ -193,7 +165,7 @@ def generate_mask(x: torch.Tensor, epoch: int, ssl_cfg: dict) -> torch.Tensor:
         mask_mode="channel" → (B, T, C) bool
         mask_mode="mixed"   → (B, T, C) bool
     """
-    mask_ratio = get_mask_ratio(epoch, ssl_cfg)
+    mask_ratio: float = ssl_cfg.get("mask_ratio", 0.40)
     mode: str = ssl_cfg.get("mask_mode", "mixed")
     guard_tail: int = ssl_cfg.get("mask_guard_tail", 0)
 

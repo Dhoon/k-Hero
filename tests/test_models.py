@@ -10,7 +10,7 @@ from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.positional_encoding import TemporalEncoding
 from src.adt.models.heads.reconstruction_head import MaskedReconstructionHead
 from src.adt.models.heads.forecasting_head import ForecastingHead
-from src.adt.ssl.masking import generate_mask, get_mask_ratio, segment_mask, channel_mask
+from src.adt.ssl.masking import generate_mask, segment_mask, channel_mask
 from src.adt.ssl.losses import masked_reconstruction_loss, forecast_loss, pretrain_joint_loss
 
 
@@ -145,25 +145,11 @@ class TestEncoder:
 SSL_CFG = {
     "mask_mode": "mixed",
     "segment_prob": 0.7,
-    "mask_ratio_start": 0.15,
-    "mask_ratio_end": 0.40,
-    "curriculum_epochs": 50,
+    "mask_ratio": 0.40,
 }
 
 
 class TestMasking:
-    def test_curriculum_ratio_start(self):
-        ratio = get_mask_ratio(epoch=0, ssl_cfg=SSL_CFG)
-        assert abs(ratio - 0.15) < 1e-6
-
-    def test_curriculum_ratio_end(self):
-        ratio = get_mask_ratio(epoch=50, ssl_cfg=SSL_CFG)
-        assert abs(ratio - 0.40) < 1e-6
-
-    def test_curriculum_ratio_mid(self):
-        ratio = get_mask_ratio(epoch=25, ssl_cfg=SSL_CFG)
-        assert 0.15 < ratio < 0.40
-
     def test_segment_mask_shape(self, sample_x):
         mask = segment_mask(sample_x, mask_ratio=0.4)
         assert mask.shape == (B, T)
@@ -190,18 +176,18 @@ class TestMasking:
                 f"배치 {b}: 마스킹된 채널이 1개가 아님"
 
     def test_generate_mask_mixed_shape(self, sample_x):
-        mask = generate_mask(sample_x, epoch=10, ssl_cfg=SSL_CFG)
+        mask = generate_mask(sample_x, ssl_cfg=SSL_CFG)
         assert mask.shape == (B, T, C)
 
     def test_generate_mask_segment_mode(self, sample_x):
         cfg = {**SSL_CFG, "mask_mode": "segment"}
-        mask = generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+        mask = generate_mask(sample_x, ssl_cfg=cfg)
         assert mask.shape == (B, T)
 
     def test_generate_mask_invalid_mode(self, sample_x):
         cfg = {**SSL_CFG, "mask_mode": "invalid"}
         with pytest.raises(ValueError):
-            generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+            generate_mask(sample_x, ssl_cfg=cfg)
 
 
 # ------------------------------------------------------------------
@@ -269,7 +255,7 @@ class TestPretrainPipeline:
         head = MaskedReconstructionHead(d_model=D, n_features=C)
 
         # 1. mask 생성 (epoch=10, mixed 모드)
-        mask = generate_mask(sample_x, epoch=10, ssl_cfg=SSL_CFG)
+        mask = generate_mask(sample_x, ssl_cfg=SSL_CFG)
         assert mask.shape in [(B, T), (B, T, C)]
 
         # 2. encoder forward (마스킹 적용)
@@ -295,7 +281,7 @@ class TestPretrainPipeline:
         ).train()
         head = MaskedReconstructionHead(d_model=D, n_features=C)
 
-        mask = generate_mask(sample_x, epoch=0, ssl_cfg=SSL_CFG)
+        mask = generate_mask(sample_x, ssl_cfg=SSL_CFG)
         pred = head(enc(sample_x, sample_time_feat, mask=mask))
         loss = masked_reconstruction_loss(pred, sample_x, mask)
         loss.backward()
@@ -365,7 +351,7 @@ class TestMaskGuardTail:
         """segment 모드에서 마지막 guard_tail timestep은 마스킹되지 않아야 한다."""
         cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
         for _ in range(30):   # 30회 반복으로 확률적 검증
-            mask = generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+            mask = generate_mask(sample_x, ssl_cfg=cfg)
             # segment 모드 반환: (B, T)
             assert mask.shape == (B, T)
             tail = mask[:, -GUARD_TAIL:]
@@ -374,7 +360,7 @@ class TestMaskGuardTail:
     def test_guard_tail_does_not_zero_out_all_masks(self, sample_x):
         """guard_tail 적용 후에도 마스킹된 위치가 존재해야 한다 (ratio 유지)."""
         cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
-        mask = generate_mask(sample_x, epoch=0, ssl_cfg=cfg)
+        mask = generate_mask(sample_x, ssl_cfg=cfg)
         assert mask.any(), "guard_tail 적용 후 마스킹된 위치가 전혀 없음"
 
     def test_without_guard_tail_can_mask_tail(self, sample_x):
@@ -384,7 +370,7 @@ class TestMaskGuardTail:
         found = False
         x_large = torch.randn(64, T, C)
         for _ in range(100):
-            mask = generate_mask(x_large, epoch=0, ssl_cfg=cfg)
+            mask = generate_mask(x_large, ssl_cfg=cfg)
             if mask[:, -GUARD_TAIL:].any():
                 found = True
                 break
@@ -421,7 +407,7 @@ class TestJointLoss:
         recon_head = MaskedReconstructionHead(d_model=D, n_features=C).train()
         fc_head = ForecastingHead(d_model=D, forecast_horizon=H, n_features=C).train()
 
-        mask = generate_mask(sample_x, epoch=0, ssl_cfg=SSL_CFG)
+        mask = generate_mask(sample_x, ssl_cfg=SSL_CFG)
         enc_out = enc(sample_x, sample_time_feat, mask=mask)
 
         pred_recon = recon_head(enc_out)

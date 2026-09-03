@@ -23,7 +23,7 @@ from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.reconstruction_head import MaskedReconstructionHead
 from src.adt.models.heads.forecasting_head import ForecastingHead
 from src.adt.ssl.losses import masked_reconstruction_loss, forecast_loss, pretrain_joint_loss
-from src.adt.ssl.masking import generate_mask, get_mask_ratio
+from src.adt.ssl.masking import generate_mask
 from src.adt.utils.checkpoint import save_checkpoint
 from src.adt.utils.logger import get_logger
 from src.adt.utils.seed import set_seed
@@ -76,7 +76,7 @@ def _train_epoch(
         time_feat = time_feat.to(device)
         future_target = future_target.to(device)
 
-        mask = generate_mask(x, epoch, ssl_cfg)
+        mask = generate_mask(x, ssl_cfg)
 
         # 단일 encoder forward — reconstruction과 forecasting이 같은 출력을 공유
         enc_out = encoder(x, time_feat, mask=mask)   # (B, T, d_model)
@@ -113,7 +113,6 @@ def _val_epoch(
     forecast_head: nn.Module,
     loader: torch.utils.data.DataLoader,
     device: torch.device,
-    epoch: int,
     ssl_cfg: dict,
     forecast_loss_weight: float,
 ) -> dict[str, float]:
@@ -127,7 +126,7 @@ def _val_epoch(
         time_feat = time_feat.to(device)
         future_target = future_target.to(device)
 
-        mask = generate_mask(x, epoch, ssl_cfg)
+        mask = generate_mask(x, ssl_cfg)
 
         enc_out = encoder(x, time_feat, mask=mask)
         pred_recon = recon_head(enc_out)
@@ -243,9 +242,8 @@ def run(cfg: dict[str, Any], max_epochs: int | None = None) -> None:
         )
         val_losses = _val_epoch(
             encoder, recon_head, forecast_head, val_loader,
-            device, epoch, ssl_cfg, forecast_loss_weight,
+            device, ssl_cfg, forecast_loss_weight,
         )
-        mask_ratio = get_mask_ratio(epoch, ssl_cfg)
         lr_now = scheduler.get_last_lr()[0]
 
         # 로깅
@@ -253,7 +251,6 @@ def run(cfg: dict[str, Any], max_epochs: int | None = None) -> None:
             writer.add_scalar(f"loss/{tag}", v["total"], epoch)
             writer.add_scalar(f"loss/{tag}_mask", v["mask"], epoch)
             writer.add_scalar(f"loss/{tag}_forecast", v["forecast"], epoch)
-        writer.add_scalar("ssl/mask_ratio", mask_ratio, epoch)
         writer.add_scalar("train/lr", lr_now, epoch)
 
         logger.info(
@@ -262,7 +259,7 @@ def run(cfg: dict[str, Any], max_epochs: int | None = None) -> None:
             f"  (mask={train_losses['mask']:.4f} fc={train_losses['forecast']:.4f})"
             f"  val={val_losses['total']:.4f}"
             f"  (mask={val_losses['mask']:.4f} fc={val_losses['forecast']:.4f})"
-            f"  mask_ratio={mask_ratio:.3f}  lr={lr_now:.2e}"
+            f"  lr={lr_now:.2e}"
         )
 
         # 체크포인트 — encoder + 두 head 모두 저장 (downstream은 encoder만 사용)
