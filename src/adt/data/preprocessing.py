@@ -5,6 +5,7 @@
   2. report_status_info              — 상태정보 분류 및 의심 이벤트 CSV 저장
   3. split_by_gap                    — 대형 gap 기준 segment 분리, 짧은 segment 버림
   4. resample_and_fill (per segment) — segment 내 짧은 결측만 linear 보간
+  5. cumulative_to_interval (선택)  — 적산 누적값 → 구간 사용량 diff 변환
   반환: list[DataFrame]  (segment별 전처리 완료본)
 """
 from __future__ import annotations
@@ -185,6 +186,48 @@ def split_by_gap(
 
 
 # -------------------------------------------------------------------------
+# 적산 누적값 → 구간 사용량 변환 (1-step diff)
+# -------------------------------------------------------------------------
+
+def cumulative_to_interval(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    clip_negative: bool = True,
+) -> pd.DataFrame:
+    """적산 누적값(전력량계 판독값) → 구간 사용량으로 변환.
+
+    리샘플링 완료 후 등간격 그리드에서 호출해야 함.
+    첫 번째 행은 diff 기준값이 없으므로 제거.
+    음수 diff(계량기 리셋 등)는 clip_negative=True일 때 0으로 clamp.
+
+    Args:
+        df           : resample_and_fill() 반환 DataFrame (인덱스 0-based)
+        feature_cols : diff를 적용할 전력 채널 컬럼명 목록
+        clip_negative: True면 음수 diff 값을 0으로 clamp (계량기 리셋 처리)
+
+    Returns:
+        구간 사용량 DataFrame (첫 행 제거 → 행 수 -1)
+    """
+    df = df.copy()
+    present_cols = [c for c in feature_cols if c in df.columns]
+
+    for col in present_cols:
+        df[col] = df[col].diff()
+
+    # 첫 행: 이전 segment 정보 없음 → NaN → 제거
+    df = df.iloc[1:].reset_index(drop=True)
+
+    if clip_negative:
+        for col in present_cols:
+            n_neg = int((df[col] < 0).sum())
+            if n_neg > 0:
+                print(f"    [diff] {col}: 음수 diff {n_neg}건 → 0으로 clip (계량기 리셋 추정)")
+            df[col] = df[col].clip(lower=0)
+
+    return df
+
+
+# -------------------------------------------------------------------------
 # 리샘플링 + 보간 (단일 segment)
 # -------------------------------------------------------------------------
 
@@ -226,8 +269,15 @@ def preprocess_meter(
     window_size: int = 96,
     meter_id: str = "",
     status_events_dir: Path | None = None,
+    diff_features: list[str] | None = None,
 ) -> list[pd.DataFrame]:
-    """단일 계량기 DataFrame → 전처리 완료된 segment DataFrame 리스트."""
+    """단일 계량기 DataFrame → 전처리 완료된 segment DataFrame 리스트.
+
+    Args:
+        diff_features: None이면 diff 생략; 전력 채널 컬럼명 리스트를 넘기면
+                       resample_and_fill 후 cumulative_to_interval()을 적용해
+                       적산 누적값 → 구간 사용량으로 변환한다.
+    """
     df = sort_and_dedup(df)
     report_status_info(df, meter_id=meter_id, status_events_dir=status_events_dir)
 
@@ -239,7 +289,8 @@ def preprocess_meter(
     )
 
     label = f"meter={meter_id}" if meter_id else ""
-    print(f"\n  [보간 비율] {label}")
+    diff_label = f"diff={diff_features}" if diff_features else "diff=없음"
+    print(f"\n  [보간 비율] {label}  {diff_label}")
 
     resampled: list[pd.DataFrame] = []
     for i, seg in enumerate(kept_segs):
@@ -257,6 +308,10 @@ def preprocess_meter(
             f"  raw={raw_n}  resampled={rs_n}"
             f"  보간비율={interp_pct:.1f}%{flag}"
         )
+
+        if diff_features:
+            seg_r = cumulative_to_interval(seg_r, feature_cols=diff_features)
+
         resampled.append(seg_r)
 
     return resampled

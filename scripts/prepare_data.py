@@ -126,6 +126,7 @@ def main(config_path: str = "configs/data/default.yaml") -> None:
             window_size=window_size,
             meter_id=meter_id,
             status_events_dir=scaler_dir / "status_events",
+            diff_features=feature_cols,   # 적산값 → 구간 사용량 변환
         )
         meter_segments[meter_id] = segments
         total_rows = sum(len(s) for s in segments)
