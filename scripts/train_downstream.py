@@ -2,15 +2,17 @@
 
 사용법::
 
-    # 전체 6개 fold 학습
-    python scripts/train_downstream.py
+    # Tier 1 (LayerNorm only)
+    python scripts/train_downstream.py --fold all_type --mode t1
 
-    # 특정 fold만
+    # Tier 2 (전체 LN + 마지막 block attention/FFN)
+    python scripts/train_downstream.py --fold all_type --mode t2
+
+    # yaml 기본값 그대로
     python scripts/train_downstream.py --fold all_type
-    python scripts/train_downstream.py --fold unseen_replay
 
     # config 지정
-    python scripts/train_downstream.py --config configs/downstream/default.yaml
+    python scripts/train_downstream.py --config configs/downstream/default.yaml --fold all_type --mode t1
 """
 from __future__ import annotations
 
@@ -24,6 +26,11 @@ from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.utils.checkpoint import load_encoder_frozen
 from src.adt.engine.train_downstream import ALL_FOLDS, train_fold, train_all_folds
 
+_MODE_MAP = {
+    "t1": "layernorm_only",
+    "t2": "last_block",
+}
+
 
 def _load_cfg(path: str | Path) -> dict:
     with open(path, encoding="utf-8") as f:
@@ -33,12 +40,21 @@ def _load_cfg(path: str | Path) -> dict:
 def main(
     config: str = "configs/downstream/default.yaml",
     fold: str | None = None,
+    mode: str | None = None,
 ) -> None:
     cfg = _load_cfg(config)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[train_downstream] device={device}  config={config}")
 
-    # encoder 로드 + freeze
+    # --mode 옵션이 있으면 yaml의 finetune.mode를 덮어씀
+    if mode is not None:
+        ft_mode = _MODE_MAP.get(mode, mode)
+        cfg.setdefault("finetune", {})["mode"] = ft_mode
+        cfg["finetune"]["enabled"] = True
+        print(f"[train_downstream] finetune mode override: {mode} → {ft_mode}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ft_mode_str = cfg.get("finetune", {}).get("mode", "layernorm_only")
+    print(f"[train_downstream] device={device}  finetune.mode={ft_mode_str}")
+
     model_cfg = cfg["model"]
     encoder = TimeSeriesTransformerEncoder(
         d_model=model_cfg["d_model"],
@@ -48,8 +64,6 @@ def main(
         dropout=model_cfg["dropout"],
     )
     encoder = load_encoder_frozen(cfg.get("pretrain_ckpt"), encoder).to(device)
-    n_frozen = sum(p.numel() for p in encoder.parameters())
-    print(f"[train_downstream] encoder frozen params={n_frozen:,}")
 
     if fold is None or fold.lower() == "all":
         train_all_folds(cfg, encoder, device)
@@ -63,11 +77,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Downstream train")
     parser.add_argument(
         "--config", default="configs/downstream/default.yaml",
-        help="downstream config yaml 경로"
+        help="downstream config yaml 경로",
     )
     parser.add_argument(
         "--fold", default=None,
-        help="학습할 fold 이름 (생략 or 'all'이면 전부)"
+        help="학습할 fold 이름 (생략 or 'all'이면 전부)",
+    )
+    parser.add_argument(
+        "--mode", default=None, choices=["t1", "t2"],
+        help="t1=layernorm_only  t2=last_block (생략하면 yaml 값 사용)",
     )
     args = parser.parse_args()
-    main(config=args.config, fold=args.fold)
+    main(config=args.config, fold=args.fold, mode=args.mode)

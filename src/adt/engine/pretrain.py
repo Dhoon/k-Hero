@@ -76,13 +76,20 @@ def _train_epoch(
         time_feat = time_feat.to(device)
         future_target = future_target.to(device)
 
+        B = x.shape[0]
         mask = generate_mask(x, ssl_cfg)
 
-        # 단일 encoder forward — reconstruction과 forecasting이 같은 출력을 공유
-        enc_out = encoder(x, time_feat, mask=mask)   # (B, T, d_model)
+        # masked pass + clean pass를 한 번의 encoder 호출로 처리
+        mask_none = torch.zeros_like(mask)
+        h_combined = encoder(
+            torch.cat([x, x], dim=0),
+            torch.cat([time_feat, time_feat], dim=0),
+            mask=torch.cat([mask, mask_none], dim=0),
+        )  # (2B, T, d_model)
+        h_masked, h_clean = h_combined.split(B, dim=0)
 
-        pred_recon = recon_head(enc_out)             # (B, T, C)
-        pred_future = forecast_head(enc_out)         # (B, h, C)
+        pred_recon = recon_head(h_masked)    # (B, T, C) — reconstruction은 masked pass
+        pred_future = forecast_head(h_clean) # (B, h, C) — forecast는 clean pass
 
         l_mask = masked_reconstruction_loss(pred_recon, x, mask)
         l_forecast = forecast_loss(pred_future, future_target)
@@ -126,11 +133,19 @@ def _val_epoch(
         time_feat = time_feat.to(device)
         future_target = future_target.to(device)
 
+        B = x.shape[0]
         mask = generate_mask(x, ssl_cfg)
 
-        enc_out = encoder(x, time_feat, mask=mask)
-        pred_recon = recon_head(enc_out)
-        pred_future = forecast_head(enc_out)
+        mask_none = torch.zeros_like(mask)
+        h_combined = encoder(
+            torch.cat([x, x], dim=0),
+            torch.cat([time_feat, time_feat], dim=0),
+            mask=torch.cat([mask, mask_none], dim=0),
+        )
+        h_masked, h_clean = h_combined.split(B, dim=0)
+
+        pred_recon = recon_head(h_masked)
+        pred_future = forecast_head(h_clean)
 
         l_mask = masked_reconstruction_loss(pred_recon, x, mask)
         l_forecast = forecast_loss(pred_future, future_target)

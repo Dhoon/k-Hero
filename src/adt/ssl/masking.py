@@ -155,10 +155,12 @@ def mixed_mask(
 def generate_mask(x: torch.Tensor, ssl_cfg: dict) -> torch.Tensor:
     """설정에 따라 마스크를 생성하는 메인 인터페이스.
 
+    forecast branch가 clean pass를 별도로 사용하므로 guard_tail 없이
+    window 전체에 균등 마스킹.
+
     Args:
         x      : (B, T, C)  — 입력 텐서 (shape/device 참조만)
         ssl_cfg: pretrain yaml의 ssl 섹션
-                 mask_guard_tail 키가 있으면 segment 마스킹에 적용
 
     Returns:
         mask_mode="segment" → (B, T)    bool
@@ -167,16 +169,15 @@ def generate_mask(x: torch.Tensor, ssl_cfg: dict) -> torch.Tensor:
     """
     mask_ratio: float = ssl_cfg.get("mask_ratio", 0.40)
     mode: str = ssl_cfg.get("mask_mode", "mixed")
-    guard_tail: int = ssl_cfg.get("mask_guard_tail", 0)
 
     if mode == "segment":
-        return segment_mask(x, mask_ratio, guard_tail=guard_tail)
+        return segment_mask(x, mask_ratio, guard_tail=0)
 
     if mode == "channel":
         return channel_mask(x, mask_ratio)
 
     if mode == "mixed":
         seg_prob: float = ssl_cfg.get("segment_prob", 0.7)
-        return mixed_mask(x, mask_ratio, segment_prob=seg_prob, guard_tail=guard_tail)
+        return mixed_mask(x, mask_ratio, segment_prob=seg_prob, guard_tail=0)
 
     raise ValueError(f"지원하지 않는 mask_mode: {mode!r}. segment | channel | mixed 중 선택.")
