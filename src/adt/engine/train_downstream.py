@@ -16,13 +16,14 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
 from src.adt.data.labeling import LABEL_NORMAL, TYPE_IDX
 from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.detection_head import DetectionHead
 from src.adt.models.heads.classification_head import ClassificationHead
-from src.adt.utils.checkpoint import load_encoder_frozen, save_checkpoint
+from src.adt.utils.checkpoint import load_encoder_frozen, load_encoder_for_finetune, save_checkpoint
 from src.adt.utils.seed import set_seed
 
 # ── 상수 ──────────────────────────────────────────────────────────────────
@@ -265,6 +266,142 @@ def _val_epoch(
 # fold 단위 학습
 # =========================================================================
 
+# =========================================================================
+# fine-tuning 전용 epoch 헬퍼 (run_step 미사용 — gradient 흐름 직접 제어)
+# =========================================================================
+
+def _train_det_epoch(
+    encoder: nn.Module,
+    det_head: nn.Module,
+    loader: DataLoader,
+    det_loss_fn: nn.Module,
+    det_optim: torch.optim.Optimizer,
+    device: torch.device,
+    sched=None,
+    finetune: bool = False,
+) -> float:
+    """Detection-only 학습 epoch.
+
+    finetune=True: encoder.train() + gradient가 encoder(LN)까지 흐름.
+    finetune=False: encoder는 caller가 eval/frozen 상태로 넘겨야 함.
+    """
+    det_head.train()
+    if finetune:
+        encoder.train()
+    tot = n = 0
+    for x, tf, bl, _ in loader:
+        x, tf, bl = x.to(device), tf.to(device), bl.to(device)
+        if finetune:
+            z_t = encoder(x, tf)
+        else:
+            with torch.no_grad():
+                z_t = encoder(x, tf)
+        logit = det_head(z_t)
+        loss = det_loss_fn(logit, bl.float())
+        det_optim.zero_grad()
+        loss.backward()
+        det_optim.step()
+        if sched is not None:
+            sched.step()
+        tot += loss.item()
+        n += 1
+    return tot / max(n, 1)
+
+
+@torch.no_grad()
+def _val_det_epoch(
+    encoder: nn.Module,
+    det_head: nn.Module,
+    loader: DataLoader,
+    det_loss_fn: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Detection-only val epoch.
+
+    Returns:
+        (loss, auc_roc)  auc_roc=nan if only one class in val set.
+    """
+    encoder.eval()
+    det_head.eval()
+    all_logits: list[torch.Tensor] = []
+    all_labels: list[torch.Tensor] = []
+    tot = n = 0
+    for x, tf, bl, _ in loader:
+        x, tf, bl = x.to(device), tf.to(device), bl.to(device)
+        z_t = encoder(x, tf)
+        logit = det_head(z_t)
+        tot += det_loss_fn(logit, bl.float()).item()
+        all_logits.append(logit.cpu())
+        all_labels.append(bl.cpu())
+        n += 1
+    logits_np = torch.cat(all_logits).numpy()
+    labels_np = torch.cat(all_labels).numpy().astype(int)
+    try:
+        auc = float(roc_auc_score(labels_np, logits_np))
+    except Exception:
+        auc = float("nan")
+    return tot / max(n, 1), auc
+
+
+def _train_cls_epoch(
+    encoder: nn.Module,
+    cls_head: nn.Module,
+    loader: DataLoader,
+    cls_loss_fn: nn.Module,
+    type_to_class: dict[int, int],
+    cls_optim: torch.optim.Optimizer,
+    device: torch.device,
+    sched=None,
+) -> float:
+    """Classification-only 학습 epoch (encoder fully frozen)."""
+    cls_head.train()
+    tot = cls_n = 0
+    for x, tf, bl, tl in loader:
+        x, tf, bl, tl = x.to(device), tf.to(device), bl.to(device), tl.to(device)
+        with torch.no_grad():
+            z_t = encoder(x, tf)
+        attack_mask = (bl == 1)
+        if not attack_mask.any():
+            continue
+        cls_tgt = _remap_type_labels(tl[attack_mask], type_to_class).to(device)
+        cls_logit = cls_head(z_t[attack_mask])
+        loss = cls_loss_fn(cls_logit, cls_tgt)
+        cls_optim.zero_grad()
+        loss.backward()
+        cls_optim.step()
+        if sched is not None:
+            sched.step()
+        tot += loss.item()
+        cls_n += 1
+    return tot / max(cls_n, 1) if cls_n > 0 else float("nan")
+
+
+@torch.no_grad()
+def _val_cls_epoch(
+    encoder: nn.Module,
+    cls_head: nn.Module,
+    loader: DataLoader,
+    cls_loss_fn: nn.Module,
+    type_to_class: dict[int, int],
+    device: torch.device,
+) -> float:
+    """Classification-only val epoch."""
+    encoder.eval()
+    cls_head.eval()
+    tot = cls_n = 0
+    for x, tf, bl, tl in loader:
+        x, tf, bl, tl = x.to(device), tf.to(device), bl.to(device), tl.to(device)
+        z_t = encoder(x, tf)
+        attack_mask = (bl == 1)
+        if not attack_mask.any():
+            continue
+        cls_tgt = _remap_type_labels(tl[attack_mask], type_to_class).to(device)
+        cls_logit = cls_head(z_t[attack_mask])
+        tot += cls_loss_fn(cls_logit, cls_tgt).item()
+        cls_n += 1
+    return tot / max(cls_n, 1) if cls_n > 0 else float("nan")
+
+
 def _cosine_lr(
     optimizer: torch.optim.Optimizer,
     total_steps: int,
@@ -287,19 +424,27 @@ def train_fold(
 ) -> None:
     """단일 fold의 detection + classification 헤드를 학습.
 
+    finetune.enabled=True (default):
+      Phase 1 — Detection: LN-only fine-tuning, best by AUC-ROC, encoder_finetuned.pt 저장
+      Phase 2 — Classification: finetuned encoder frozen, cls_head만 학습
+
+    finetune.enabled=False:
+      기존 방식: frozen encoder, detection+classification 동시 학습
+
     Args:
         fold_name: e.g. "all_type", "unseen_scale_down"
         cfg      : downstream default.yaml 전체 dict
-        encoder  : frozen encoder (load_encoder_frozen 이미 완료)
+        encoder  : pretrain encoder 인스턴스 (load_encoder_frozen으로 초기화된 상태)
         device   : torch.device
     """
     downstream_dir = Path(cfg["downstream_dir"])
     fold_dir = downstream_dir / fold_name
 
-    det_cfg = cfg["detection"]
-    cls_cfg = cfg["classification"]
+    det_cfg   = cfg["detection"]
+    cls_cfg   = cfg["classification"]
     model_cfg = cfg["model"]
-    seed = cfg.get("seed", 42)
+    ft_cfg    = cfg.get("finetune", {"enabled": False})
+    seed      = cfg.get("seed", 42)
     set_seed(seed)
 
     # ── 데이터 로드 ─────────────────────────────────────────────────────
@@ -327,13 +472,120 @@ def train_fold(
         num_workers=0, pin_memory=device.type == "cuda",
     )
 
-    # ── 모델 초기화 ──────────────────────────────────────────────────────
+    # ── 공통 ckpt 경로 ────────────────────────────────────────────────────
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
+    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / "classifier"
+    det_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    cls_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    class_names_path = cls_ckpt_dir / "class_names.json"
+    class_names_path.write_text(
+        json.dumps(class_names, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # ── Loss ─────────────────────────────────────────────────────────────
+    pw_tensor   = torch.tensor([pw_float], device=device)
+    det_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pw_tensor)
+    cls_loss_fn = nn.CrossEntropyLoss()
+
     d_model = model_cfg["d_model"]
+
+    # =========================================================================
+    # Phase 1 — Detection (LN fine-tuning or frozen)
+    # =========================================================================
     det_head = DetectionHead(
         d_model=d_model,
         hidden_dim=det_cfg["hidden_dim"],
         dropout=det_cfg["dropout"],
     ).to(device)
+
+    if ft_cfg.get("enabled", False):
+        # LN-only unfreeze: pretrain ckpt에서 재로드
+        pretrain_ckpt = cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt")
+        encoder, ln_params = load_encoder_for_finetune(
+            pretrain_ckpt, encoder, mode=ft_cfg.get("mode", "layernorm_only")
+        )
+        encoder = encoder.to(device)
+        enc_lr = float(ft_cfg.get("encoder_lr", 1e-5))
+        det_optim = torch.optim.AdamW(
+            [
+                {"params": det_head.parameters(), "lr": det_cfg["lr"]},
+                {"params": ln_params, "lr": enc_lr},
+            ],
+            weight_decay=det_cfg["weight_decay"],
+        )
+    else:
+        encoder.eval()
+        for p in encoder.parameters():
+            p.requires_grad_(False)
+        det_optim = torch.optim.AdamW(
+            det_head.parameters(),
+            lr=det_cfg["lr"], weight_decay=det_cfg["weight_decay"],
+        )
+
+    det_epochs = det_cfg["epochs"]
+    det_steps  = det_epochs * len(train_loader)
+    det_sched  = _cosine_lr(det_optim, det_steps, det_cfg.get("warmup_steps", 0))
+
+    best_det_auc  = float("-inf")   # finetune 모드: AUC 기준
+    best_det_loss = float("inf")    # 기존 모드: loss 기준
+
+    for epoch in range(det_epochs):
+        finetune_on = ft_cfg.get("enabled", False)
+        tr_loss = _train_det_epoch(
+            encoder, det_head, train_loader, det_loss_fn,
+            det_optim, device, sched=det_sched, finetune=finetune_on,
+        )
+        val_loss, val_auc = _val_det_epoch(
+            encoder, det_head, val_loader, det_loss_fn, device,
+        )
+
+        if finetune_on:
+            det_is_best = (not math.isnan(val_auc)) and (val_auc > best_det_auc)
+            if det_is_best:
+                best_det_auc = val_auc
+        else:
+            det_is_best = val_loss < best_det_loss
+            if det_is_best:
+                best_det_loss = val_loss
+
+        save_checkpoint(
+            {
+                "epoch": epoch + 1,
+                "head": det_head.state_dict(),
+                "optimizer": det_optim.state_dict(),
+                "val_loss": val_loss,
+                "val_auc": val_auc,
+            },
+            det_ckpt_dir, is_best=det_is_best,
+        )
+
+        if finetune_on and det_is_best:
+            # encoder_finetuned.pt: encoder state_dict만 별도 저장
+            ft_enc_path = det_ckpt_dir / "encoder_finetuned.pt"
+            torch.save({"encoder": encoder.state_dict()}, ft_enc_path)
+
+        if verbose:
+            auc_str = f"{val_auc:.4f}" if not math.isnan(val_auc) else " nan "
+            print(
+                f"  [det] ep{epoch+1:3d}  "
+                f"tr={tr_loss:.4f}  val={val_loss:.4f}  auc={auc_str}"
+                + ("  [★]" if det_is_best else "")
+            )
+
+    if verbose:
+        if ft_cfg.get("enabled", False):
+            print(f"[det] done  best_auc={best_det_auc:.4f}")
+        else:
+            print(f"[det] done  best_val={best_det_loss:.4f}")
+
+    # ── Phase 1 완료 후 encoder 완전 freeze ───────────────────────────────
+    encoder.eval()
+    for p in encoder.parameters():
+        p.requires_grad_(False)
+
+    # =========================================================================
+    # Phase 2 — Classification (encoder fully frozen)
+    # =========================================================================
     cls_head = ClassificationHead(
         d_model=d_model,
         num_classes=num_classes,
@@ -341,94 +593,50 @@ def train_fold(
         dropout=cls_cfg["dropout"],
     ).to(device)
 
-    # ── Loss ─────────────────────────────────────────────────────────────
-    pw_tensor = torch.tensor([pw_float], device=device)
-    det_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pw_tensor)
-    cls_loss_fn = nn.CrossEntropyLoss()
-
-    # ── Optimizer ────────────────────────────────────────────────────────
-    det_optim = torch.optim.AdamW(
-        det_head.parameters(),
-        lr=det_cfg["lr"], weight_decay=det_cfg["weight_decay"],
-    )
     cls_optim = torch.optim.AdamW(
         cls_head.parameters(),
         lr=cls_cfg["lr"], weight_decay=cls_cfg["weight_decay"],
     )
-
-    det_epochs = det_cfg["epochs"]
     cls_epochs = cls_cfg["epochs"]
-    epochs = max(det_epochs, cls_epochs)
+    cls_steps  = cls_epochs * len(train_loader)
+    cls_sched  = _cosine_lr(cls_optim, cls_steps, cls_cfg.get("warmup_steps", 0))
 
-    det_steps = det_epochs * len(train_loader)
-    cls_steps = cls_epochs * len(train_loader)
-    det_sched = _cosine_lr(det_optim, det_steps, det_cfg.get("warmup_steps", 0))
-    cls_sched = _cosine_lr(cls_optim, cls_steps, cls_cfg.get("warmup_steps", 0))
-
-    # ── 학습 루프 ────────────────────────────────────────────────────────
-    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
-    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / "classifier"
-    det_ckpt_dir.mkdir(parents=True, exist_ok=True)
-    cls_ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-    # class_names.json 저장 (classifier ckpt 디렉토리)
-    class_names_path = cls_ckpt_dir / "class_names.json"
-    class_names_path.write_text(
-        json.dumps(class_names, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    best_det_val = float("inf")
     best_cls_val = float("inf")
 
-    for epoch in range(epochs):
-        train_losses = _train_epoch(
-            encoder, det_head, cls_head, train_loader,
-            det_loss_fn, cls_loss_fn, type_to_class,
-            det_optim, cls_optim, device,
-            det_sched=det_sched if epoch < det_epochs else None,
-            cls_sched=cls_sched if epoch < cls_epochs else None,
+    for epoch in range(cls_epochs):
+        tr_cls = _train_cls_epoch(
+            encoder, cls_head, train_loader, cls_loss_fn,
+            type_to_class, cls_optim, device, sched=cls_sched,
         )
-        val_losses = _val_epoch(
-            encoder, det_head, cls_head, val_loader,
-            det_loss_fn, cls_loss_fn, type_to_class, device,
+        val_cls = _val_cls_epoch(
+            encoder, cls_head, val_loader, cls_loss_fn, type_to_class, device,
         )
 
-        det_is_best = val_losses["det"] < best_det_val
-        cls_is_best = (
-            not math.isnan(val_losses["cls"])
-            and val_losses["cls"] < best_cls_val
-        )
-        if det_is_best:
-            best_det_val = val_losses["det"]
+        cls_is_best = (not math.isnan(val_cls)) and (val_cls < best_cls_val)
         if cls_is_best:
-            best_cls_val = val_losses["cls"]
+            best_cls_val = val_cls
 
         save_checkpoint(
-            {"epoch": epoch + 1, "head": det_head.state_dict(),
-             "optimizer": det_optim.state_dict(), "val_loss": val_losses["det"]},
-            det_ckpt_dir, is_best=det_is_best,
-        )
-        save_checkpoint(
-            {"epoch": epoch + 1, "head": cls_head.state_dict(),
-             "num_classes": num_classes, "class_names": class_names,
-             "optimizer": cls_optim.state_dict(), "val_loss": val_losses["cls"]},
+            {
+                "epoch": epoch + 1,
+                "head": cls_head.state_dict(),
+                "num_classes": num_classes,
+                "class_names": class_names,
+                "optimizer": cls_optim.state_dict(),
+                "val_loss": val_cls,
+            },
             cls_ckpt_dir, is_best=cls_is_best,
         )
 
         if verbose:
             print(
-                f"  ep{epoch+1:3d}  "
-                f"train det={train_losses['det']:.4f} cls={train_losses['cls']:.4f}  "
-                f"val det={val_losses['det']:.4f} cls={val_losses['cls']:.4f}"
-                + ("  [det★]" if det_is_best else "")
-                + ("  [cls★]" if cls_is_best else "")
+                f"  [cls] ep{epoch+1:3d}  "
+                f"tr={tr_cls:.4f}  val={val_cls:.4f}"
+                + ("  [★]" if cls_is_best else "")
             )
 
     if verbose:
-        print(
-            f"[train] fold={fold_name} done  "
-            f"best val det={best_det_val:.4f}  cls={best_cls_val:.4f}"
-        )
+        print(f"[cls] done  best_val={best_cls_val:.4f}")
 
 
 def train_all_folds(

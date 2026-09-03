@@ -24,12 +24,31 @@ from sklearn.metrics import (
 )
 
 from src.adt.data.labeling import TYPE_IDX
+from src.adt.models.encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.detection_head import DetectionHead
 from src.adt.models.heads.classification_head import ClassificationHead
 from src.adt.engine.train_downstream import (
     ALL_FOLDS, FOLD_UNSEEN_TYPE, IDX_TO_TYPE,
     DownstreamFoldDataset,
 )
+
+
+def _build_encoder(cfg: dict, device: torch.device) -> nn.Module:
+    """cfg[model]로 encoder 인스턴스 생성 (가중치 미로드, random init)."""
+    mc = cfg["model"]
+    dc = cfg.get("data_config", "configs/data/default.yaml")
+    import yaml
+    from pathlib import Path as _Path
+    data_cfg = yaml.safe_load(open(dc, encoding="utf-8"))
+    n_features = len(data_cfg["feature_cols"])
+    return TimeSeriesTransformerEncoder(
+        n_features=n_features,
+        d_model=mc["d_model"],
+        n_heads=mc["n_heads"],
+        n_layers=mc["n_layers"],
+        d_ff=mc["d_ff"],
+        dropout=mc["dropout"],
+    ).to(device)
 
 # =========================================================================
 # 추론 헬퍼
@@ -146,8 +165,22 @@ def evaluate_fold(
         cls_head.load_state_dict(state["head"])
     cls_head.eval()
 
+    # ── encoder 선택: fold-specific finetuned 우선, 없으면 passed encoder ───
+    ft_enc_path = det_ckpt_dir / "encoder_finetuned.pt"
+    if ft_enc_path.exists():
+        eval_encoder = _build_encoder(cfg, device)
+        state = torch.load(ft_enc_path, map_location="cpu")
+        eval_encoder.load_state_dict(state["encoder"], strict=True)
+        eval_encoder.eval()
+        for p in eval_encoder.parameters():
+            p.requires_grad_(False)
+        if verbose:
+            print(f"[eval/{fold_name}] finetuned encoder loaded: {ft_enc_path}")
+    else:
+        eval_encoder = encoder
+
     # ── Detection 평가 ────────────────────────────────────────────────────
-    det_logits, bl_all, tl_all = _infer(encoder, det_head, test_loader, device)
+    det_logits, bl_all, tl_all = _infer(eval_encoder, det_head, test_loader, device)
     pred_binary = (det_logits >= 0.0).astype(np.int32)  # logit threshold=0
 
     det_metrics = {
@@ -204,14 +237,8 @@ def evaluate_fold(
         orig_to_cls = {TYPE_IDX[name]: int(k) for k, name in class_names.items()}
         cls_targets = np.array([orig_to_cls[t] for t in tl_cls], dtype=np.int32)
 
-        # Classification 추론: cls_mask 샘플만 다시 forward
-        # (전체 test loader에서 한 번에 얻은 logits을 index로 뽑기 위해 별도 run)
-        cls_logits_all, _, _ = _infer(encoder, cls_head, test_loader, device)
-        # _infer returns logits for ALL test samples with head=cls_head;
-        # cls_head expects Attack-only input, but we ran on all.
-        # Safer: re-run only on cls_mask samples.
         cls_logits_all, cls_bl, cls_tl = _infer_filtered(
-            encoder, cls_head, ds_test, cls_mask, det_cfg["batch_size"], device
+            eval_encoder, cls_head, ds_test, cls_mask, det_cfg["batch_size"], device
         )
         cls_preds = cls_logits_all.argmax(axis=1)
 

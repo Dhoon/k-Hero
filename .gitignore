@@ -12,8 +12,8 @@ data/processed/**
 !data/processed/**/.gitkeep
 
 # ── 체크포인트 / 텐서보드 이벤트 (대용량 바이너리) ─────────────
-# checkpoints/**/*.pt
-# checkpoints/**/*.pth
+checkpoints/**/*.pt
+checkpoints/**/*.pth
 # logs/**/*.tfevents.*
 # logs/**/*.log
 

@@ -43,6 +43,12 @@ classification:
   ckpt_dir: checkpoints/downstream
   log_dir:  logs/downstream
 
+# ── Encoder fine-tuning 설정 ──────────────────────────────────────────────
+finetune:
+  enabled: true
+  mode: layernorm_only          # LayerNorm affine 파라미터만 unfreeze
+  encoder_lr: 1.0e-5            # head_lr(1e-3) 대비 1/100
+
 # ── 평가 결과 저장 디렉토리 ───────────────────────────────────────────────
 output_dir: outputs/scores
 

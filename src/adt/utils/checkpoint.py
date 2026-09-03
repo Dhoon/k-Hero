@@ -54,6 +54,61 @@ def load_checkpoint(
     return state.get("epoch", 0), state.get("best_val_loss", float("inf"))
 
 
+def load_encoder_for_finetune(
+    ckpt_path: str | Path,
+    encoder: nn.Module,
+    mode: str = "layernorm_only",
+) -> tuple[nn.Module, list]:
+    """pretrain checkpoint 로드 후 mode에 따라 일부 파라미터만 unfreeze.
+
+    Args:
+        ckpt_path: pretrain best.pt 경로
+        encoder  : 가중치를 채울 encoder 인스턴스 (in-place 수정)
+        mode     : "layernorm_only" — LayerNorm affine 파라미터만 학습 가능
+
+    Returns:
+        (encoder, trainable_params)
+        encoder        : .train() 모드, LN만 requires_grad=True
+        trainable_params: optimizer에 넘길 LN 파라미터 리스트
+
+    Raises:
+        FileNotFoundError: checkpoint 파일이 없을 때
+        ValueError       : 지원하지 않는 mode
+    """
+    ckpt_path = Path(ckpt_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Pretrain checkpoint not found: {ckpt_path}")
+
+    state = torch.load(ckpt_path, map_location="cpu")
+    enc_state = state.get("encoder", state)
+    encoder.load_state_dict(enc_state, strict=True)
+
+    # 전체 freeze 먼저
+    for p in encoder.parameters():
+        p.requires_grad_(False)
+
+    if mode != "layernorm_only":
+        raise ValueError(f"지원하지 않는 finetune mode: {mode!r}. 현재는 'layernorm_only'만 지원.")
+
+    trainable_params: list = []
+    n_modules = n_params = 0
+    for name, m in encoder.named_modules():
+        if isinstance(m, nn.LayerNorm):
+            for p in m.parameters(recurse=False):
+                p.requires_grad_(True)
+                trainable_params.append(p)
+                n_params += p.numel()
+            n_modules += 1
+
+    print(
+        f"[finetune] mode={mode}  "
+        f"unfreeze: {n_modules} LayerNorm modules  {n_params:,} params"
+    )
+
+    encoder.train()
+    return encoder, trainable_params
+
+
 def load_encoder_frozen(
     ckpt_path: str | Path | None,
     encoder: nn.Module,

@@ -519,3 +519,119 @@ class TestEvaluateFiltering:
         assert sd_idx not in collected_tl, (
             f"scale_down(type_label={sd_idx}) found in unseen_scale_down eval samples"
         )
+
+
+# =========================================================================
+# 8. TestEncoderFinetune — LayerNorm-only fine-tuning
+# =========================================================================
+
+class TestEncoderFinetune:
+    """load_encoder_for_finetune + finetune 학습 흐름 검증."""
+
+    @pytest.fixture
+    def enc_and_ckpt(self, tmp_path):
+        """encoder 인스턴스 + 더미 pretrain checkpoint 반환."""
+        enc = TimeSeriesTransformerEncoder(
+            n_features=C, d_model=D, n_heads=4, n_layers=2, d_ff=256, dropout=0.0
+        )
+        ckpt = {"encoder": enc.state_dict(), "epoch": 1, "best_val_loss": 0.5}
+        p = tmp_path / "best.pt"
+        torch.save(ckpt, p)
+        return enc, p
+
+    def test_layernorm_only_unfreeze(self, enc_and_ckpt):
+        """layernorm_only 모드에서 LN param만 requires_grad=True."""
+        from src.adt.utils.checkpoint import load_encoder_for_finetune
+        enc, ckpt_path = enc_and_ckpt
+        enc, trainable = load_encoder_for_finetune(ckpt_path, enc, mode="layernorm_only")
+
+        # LN 파라미터: requires_grad=True
+        for name, m in enc.named_modules():
+            if isinstance(m, nn.LayerNorm):
+                for p in m.parameters(recurse=False):
+                    assert p.requires_grad, f"LN param in {name} should be trainable"
+
+        # 비LN 파라미터: requires_grad=False
+        for name, m in enc.named_modules():
+            if not isinstance(m, nn.LayerNorm):
+                for p in m.parameters(recurse=False):
+                    assert not p.requires_grad, f"Non-LN param in {name} should be frozen"
+
+        # trainable 목록이 비어있지 않아야 함
+        assert len(trainable) > 0, "trainable_params should not be empty"
+
+    def test_gradient_flows_through_ln_only(self, enc_and_ckpt):
+        """finetune=True 학습 스텝 후 LN weight.grad가 채워짐, 나머지는 None."""
+        from src.adt.utils.checkpoint import load_encoder_for_finetune
+        from src.adt.engine.train_downstream import _train_det_epoch
+        from torch.utils.data import TensorDataset
+
+        enc, ckpt_path = enc_and_ckpt
+        enc, ln_params = load_encoder_for_finetune(ckpt_path, enc, mode="layernorm_only")
+
+        det_head = DetectionHead(d_model=D, hidden_dim=32)
+        det_optim = torch.optim.AdamW(
+            [
+                {"params": det_head.parameters(), "lr": 1e-3},
+                {"params": ln_params, "lr": 1e-5},
+            ]
+        )
+        det_loss_fn = nn.BCEWithLogitsLoss()
+
+        # 더미 DataLoader: (x, tf, bl, tl) 4-tuple
+        n = 16
+        X  = torch.randn(n, T, C)
+        tf = torch.zeros(n, T, 2)
+        bl = torch.zeros(n, dtype=torch.long)
+        bl[n // 2:] = 1
+        tl = torch.zeros(n, dtype=torch.long)
+        ds = TensorDataset(X, tf, bl, tl)
+        loader = torch.utils.data.DataLoader(ds, batch_size=8)
+
+        _train_det_epoch(
+            enc, det_head, loader, det_loss_fn, det_optim,
+            torch.device("cpu"), sched=None, finetune=True,
+        )
+
+        # LN weight/bias에 grad가 채워졌는지 확인
+        for name, m in enc.named_modules():
+            if isinstance(m, nn.LayerNorm):
+                for p in m.parameters(recurse=False):
+                    assert p.grad is not None, (
+                        f"LN param in {name} has no gradient after finetune step"
+                    )
+
+        # 비LN 파라미터의 grad는 None이어야 함
+        for name, p in enc.named_parameters():
+            if not p.requires_grad:
+                assert p.grad is None, (
+                    f"Frozen param {name} has non-None gradient"
+                )
+
+    def test_cls_phase_encoder_fully_frozen(self, enc_and_ckpt, tmp_path, small_cfg):
+        """finetune 활성화 train_fold 후 cls phase에서 encoder가 완전히 frozen."""
+        from src.adt.engine.train_downstream import _train_cls_epoch
+        from torch.utils.data import TensorDataset
+
+        enc, ckpt_path = enc_and_ckpt
+        # finetune 설정을 small_cfg에 추가
+        ft_small_cfg = dict(small_cfg)
+        ft_small_cfg["pretrain_ckpt"] = str(ckpt_path)
+        ft_small_cfg["finetune"] = {
+            "enabled": True,
+            "mode": "layernorm_only",
+            "encoder_lr": 1e-5,
+        }
+
+        # fold 데이터 생성
+        ds_dir = Path(ft_small_cfg["downstream_dir"])
+        _make_fold_data(ds_dir, "all_type", ["train", "val"], n_per_split=N_TRAIN)
+
+        # train_fold 실행 (Phase 1 + Phase 2)
+        train_fold("all_type", ft_small_cfg, enc, torch.device("cpu"), verbose=False)
+
+        # Phase 2 완료 후: encoder는 완전히 frozen이어야 함
+        for name, p in enc.named_parameters():
+            assert not p.requires_grad, (
+                f"Encoder param {name} should be frozen after classification phase"
+            )
