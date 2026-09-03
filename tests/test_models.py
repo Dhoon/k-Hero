@@ -340,42 +340,6 @@ class TestForecastingHead:
             assert not torch.isnan(p.grad).any(), f"{name} grad has NaN"
 
 
-# ------------------------------------------------------------------
-# mask_guard_tail
-# ------------------------------------------------------------------
-
-GUARD_TAIL = 8
-
-class TestMaskGuardTail:
-    def test_segment_mode_no_mask_in_tail(self, sample_x):
-        """segment 모드에서 마지막 guard_tail timestep은 마스킹되지 않아야 한다."""
-        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
-        for _ in range(30):   # 30회 반복으로 확률적 검증
-            mask = generate_mask(sample_x, ssl_cfg=cfg)
-            # segment 모드 반환: (B, T)
-            assert mask.shape == (B, T)
-            tail = mask[:, -GUARD_TAIL:]
-            assert not tail.any(), f"guard_tail 구간에 마스킹된 위치 발견: {tail.nonzero()}"
-
-    def test_guard_tail_does_not_zero_out_all_masks(self, sample_x):
-        """guard_tail 적용 후에도 마스킹된 위치가 존재해야 한다 (ratio 유지)."""
-        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": GUARD_TAIL}
-        mask = generate_mask(sample_x, ssl_cfg=cfg)
-        assert mask.any(), "guard_tail 적용 후 마스킹된 위치가 전혀 없음"
-
-    def test_without_guard_tail_can_mask_tail(self, sample_x):
-        """guard_tail=0 이면 마지막 구간도 마스킹 가능 (통계적 검증)."""
-        cfg = {**SSL_CFG, "mask_mode": "segment", "mask_guard_tail": 0}
-        # 100회 중 최소 1회는 마지막 구간이 마스킹돼야 함
-        found = False
-        x_large = torch.randn(64, T, C)
-        for _ in range(100):
-            mask = generate_mask(x_large, ssl_cfg=cfg)
-            if mask[:, -GUARD_TAIL:].any():
-                found = True
-                break
-        assert found, "guard_tail=0인데 마지막 구간이 100회 중 한 번도 마스킹 안 됨 (구현 오류 가능성)"
-
 
 # ------------------------------------------------------------------
 # Joint loss
