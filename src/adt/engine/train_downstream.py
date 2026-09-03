@@ -502,7 +502,9 @@ def train_fold(
         # LN-only unfreeze: pretrain ckpt에서 재로드
         pretrain_ckpt = cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt")
         encoder, ln_params = load_encoder_for_finetune(
-            pretrain_ckpt, encoder, mode=ft_cfg.get("mode", "layernorm_only")
+            pretrain_ckpt, encoder,
+            mode=ft_cfg.get("mode", "layernorm_only"),
+            num_unfrozen_blocks=ft_cfg.get("num_unfrozen_blocks", 1),
         )
         encoder = encoder.to(device)
         enc_lr = float(ft_cfg.get("encoder_lr", 1e-5))

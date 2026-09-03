@@ -243,10 +243,11 @@ class TestInstantSpike:
             f"스파이크 값({spike_val:.2f})이 평균({local_mean:.2f})의 1.8배 미만"
 
     def test_spike_magnitude_in_range(self, window):
-        c, m = inject_instant_spike(window, CH, [0.9, 1.3], [1, 2], _rng())
-        local_mean = abs(window[:, CH].mean()) + 1e-6
-        ratio = c[m, CH].mean() / local_mean - 1.0   # magnitude
-        assert 0.85 <= ratio <= 1.35, f"magnitude 범위 벗어남: {ratio:.3f}"
+        # magnitude=[2.5, 5.0]: spike = local_max * (1 + mag), ratio = 1 + mag ∈ [3.5, 6.0]
+        c, m = inject_instant_spike(window, CH, [2.5, 5.0], [1, 2], _rng())
+        local_max = abs(window[:, CH].max()) + 1e-6
+        ratio = c[m, CH].mean() / local_max
+        assert 3.4 <= ratio <= 6.1, f"magnitude 범위 벗어남: ratio={ratio:.3f}"
 
 
 # =========================================================================

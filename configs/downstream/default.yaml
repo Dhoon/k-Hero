@@ -4,7 +4,7 @@
 data_config: configs/data/default.yaml
 
 # pretrain checkpoint (encoder만 로드)
-pretrain_ckpt: checkpoints/pretrain/best.pt
+pretrain_ckpt: checkpoints/pretrain/last.pt
 
 # downstream fold 데이터 디렉토리
 downstream_dir: data/processed/downstream
@@ -46,8 +46,9 @@ classification:
 # ── Encoder fine-tuning 설정 ──────────────────────────────────────────────
 finetune:
   enabled: true
-  mode: layernorm_only          # LayerNorm affine 파라미터만 unfreeze
-  encoder_lr: 1.0e-5            # head_lr(1e-3) 대비 1/100
+  mode: last_block              # 전체 LN + 마지막 block attention/FFN unfreeze
+  num_unfrozen_blocks: 1
+  encoder_lr: 1.0e-5
 
 # ── 평가 결과 저장 디렉토리 ───────────────────────────────────────────────
 output_dir: outputs/scores

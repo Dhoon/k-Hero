@@ -58,18 +58,19 @@ def load_encoder_for_finetune(
     ckpt_path: str | Path,
     encoder: nn.Module,
     mode: str = "layernorm_only",
+    num_unfrozen_blocks: int = 1,
 ) -> tuple[nn.Module, list]:
     """pretrain checkpoint 로드 후 mode에 따라 일부 파라미터만 unfreeze.
 
     Args:
-        ckpt_path: pretrain best.pt 경로
-        encoder  : 가중치를 채울 encoder 인스턴스 (in-place 수정)
-        mode     : "layernorm_only" — LayerNorm affine 파라미터만 학습 가능
+        ckpt_path           : pretrain best.pt 경로
+        encoder             : 가중치를 채울 encoder 인스턴스 (in-place 수정)
+        mode                : "layernorm_only" — LayerNorm affine만 학습 가능
+                              "last_block"     — 전체 LN + 마지막 N개 block attention/FFN
+        num_unfrozen_blocks : mode="last_block"일 때 unfreeze할 block 수 (기본 1)
 
     Returns:
         (encoder, trainable_params)
-        encoder        : .train() 모드, LN만 requires_grad=True
-        trainable_params: optimizer에 넘길 LN 파라미터 리스트
 
     Raises:
         FileNotFoundError: checkpoint 파일이 없을 때
@@ -87,23 +88,62 @@ def load_encoder_for_finetune(
     for p in encoder.parameters():
         p.requires_grad_(False)
 
-    if mode != "layernorm_only":
-        raise ValueError(f"지원하지 않는 finetune mode: {mode!r}. 현재는 'layernorm_only'만 지원.")
-
     trainable_params: list = []
-    n_modules = n_params = 0
-    for name, m in encoder.named_modules():
-        if isinstance(m, nn.LayerNorm):
-            for p in m.parameters(recurse=False):
-                p.requires_grad_(True)
-                trainable_params.append(p)
-                n_params += p.numel()
-            n_modules += 1
 
-    print(
-        f"[finetune] mode={mode}  "
-        f"unfreeze: {n_modules} LayerNorm modules  {n_params:,} params"
-    )
+    if mode == "layernorm_only":
+        n_modules = n_params = 0
+        for name, m in encoder.named_modules():
+            if isinstance(m, nn.LayerNorm):
+                for p in m.parameters(recurse=False):
+                    p.requires_grad_(True)
+                    trainable_params.append(p)
+                    n_params += p.numel()
+                n_modules += 1
+        print(
+            f"[finetune] mode={mode}  "
+            f"unfreeze: {n_modules} LayerNorm modules  {n_params:,} params"
+        )
+
+    elif mode == "last_block":
+        # (a) 전체 LayerNorm unfreeze (Tier 1 효과 유지)
+        n_ln_modules = n_ln_params = 0
+        for name, m in encoder.named_modules():
+            if isinstance(m, nn.LayerNorm):
+                for p in m.parameters(recurse=False):
+                    p.requires_grad_(True)
+                    trainable_params.append(p)
+                    n_ln_params += p.numel()
+                n_ln_modules += 1
+
+        # (b) 마지막 num_unfrozen_blocks개 layer의 attention/FFN (LN 제외 — 중복 방지)
+        layers = encoder.transformer_encoder.layers  # type: ignore[attr-defined]
+        n_total = len(layers)
+        n_unfreeze = min(num_unfrozen_blocks, n_total)
+        unfreeze_indices = list(range(n_total - n_unfreeze, n_total))
+
+        n_blk_params = 0
+        for idx in unfreeze_indices:
+            for name, m in layers[idx].named_modules():
+                if isinstance(m, nn.LayerNorm):
+                    continue  # (a)에서 이미 처리
+                for p in m.parameters(recurse=False):
+                    if not p.requires_grad:
+                        p.requires_grad_(True)
+                        trainable_params.append(p)
+                        n_blk_params += p.numel()
+
+        print(
+            f"[finetune] mode={mode}  "
+            f"LayerNorm 전체 {n_ln_modules}개 {n_ln_params:,}params"
+            f" + block{unfreeze_indices} attention/FFN {n_blk_params:,}params"
+            f"  총 {n_ln_params + n_blk_params:,}params"
+        )
+
+    else:
+        raise ValueError(
+            f"지원하지 않는 finetune mode: {mode!r}. "
+            "'layernorm_only' 또는 'last_block'만 지원."
+        )
 
     encoder.train()
     return encoder, trainable_params
