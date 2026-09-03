@@ -54,7 +54,11 @@ Attack Detection 모델        Attack Classification 모델
 Normal(0) / Attack(1)      공격 유형
 ```
 
-Transformer Encoder는 pretraining 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 동일하게 가져와서 각자의 head를 새로 붙여 독립적으로 학습한다. 같은 fold의 데이터를 쓰지만, Detection 모델과 Classification 모델은 서로 다른 학습 run(서로 다른 encoder 사본 + 서로 다른 head)이며, 하나의 encoder를 두 head가 공유하며 동시에 학습하는 구조가 아니다.
+Transformer Encoder는 pretraining 단계에서 먼저 학습되고, 두 downstream 모델이 이 pretrained encoder를 초기값으로 가져와서 각자의 head를 새로 붙여 독립적으로 학습한다. 같은 fold의 데이터를 쓰지만, Detection 모델과 Classification 모델은 서로 다른 학습 run(서로 다른 encoder 사본 + 서로 다른 head)이며, 하나의 encoder를 두 head가 공유하며 동시에 학습하는 구조가 아니다.
+
+encoder fine-tuning 범위는 `--mode` CLI 인자로 선택한다:
+- `t1` (Tier 1): 전체 LayerNorm affine 파라미터만 학습 가능 (~2K params)
+- `t2` (Tier 2): 전체 LayerNorm + 마지막 transformer block의 attention/FFN 전체 (~68K params)
 
 - Attack Detection: fold의 모든 샘플(Normal 포함) 사용, label은 (Normal이면 0, 공격이면 1)인 binary
 - Attack Classification: fold에서 Normal을 제외한 공격 샘플만 사용, label은 그 fold에 존재하는 공격 유형 중 하나 (multi-class)
@@ -71,13 +75,13 @@ fold 하나당 이 두 모델이 각각 하나씩 나온다 (아래 7번 참고,
 
 정상 시계열 window의 일부 구간을 segment 단위로 masking한다. 인접 시점 몇 개만 가리면 주변 값 보간으로 trivial하게 풀려버려서 진짜 temporal structure를 배우지 못하므로, 연속된 구간(segment)을 통째로 가린다.
 
-- masking 비율은 15% → 40%로 curriculum 방식으로 점진적으로 올린다 (학습 초반엔 쉬운 과제, 후반엔 어려운 과제).
+- masking 비율은 **고정 15%**. window 전체(끝부분 포함)에 균등 적용한다.
 - 가려진 위치는 0이 아니라 학습 가능한 [MASK] 벡터로 치환한다.
 
 ```
-Masked normal time-series
+Masked normal time-series  (mask_ratio=0.15)
         ↓
-Transformer Encoder
+Transformer Encoder  (masked forward)
         ↓
 Reconstruction Head
         ↓
@@ -92,19 +96,28 @@ L_mask = (1/|M|) * sum_{i in M} || x_i - x_hat_i ||^2
 
 ### 4.2 Forecasting (보조 objective)
 
-과거 시계열 window를 입력으로 사용하여, 그 이후의 미래 h timestep을 예측한다.
+**마스킹 없는 원본 window**를 별도의 clean forward pass로 encoder에 통과시켜, 그 이후의 미래 h timestep을 예측한다. Reconstruction objective와 Forecasting objective는 encoder forward를 공유하지 않는다.
 
 ```
-[x_(t-L+1), ..., x_t]
+[x_(t-L+1), ..., x_t]  (마스킹 없음, clean input)
         ↓
-Transformer Encoder
+Transformer Encoder  (clean forward — masked forward와 별개)
         ↓
-Forecasting Head
+Forecasting Head  (마지막 타임스텝 h_L 사용)
         ↓
 [x_(t+1), ..., x_(t+h)] 예측
 ```
 
-Transformer가 단순히 빠진 값을 복원하는 것뿐 아니라, 정상적인 전력 시계열이 시간에 따라 어떤 방향으로 변화하는지를 학습하도록 한다. 이 objective를 위해서는 데이터 파이프라인이 window 뒤쪽의 실제 미래 h step도 함께 제공해야 한다 (기존 windowing이 window 안쪽만 잘라주던 것과 다름).
+구현상 효율을 위해 masked input과 clean input을 배치 방향으로 cat해서 encoder를 1회 호출한다.
+
+```python
+h_combined = encoder(cat([x_masked, x_clean]))
+h_masked, h_clean = h_combined.split(B)
+pred_recon  = recon_head(h_masked)
+pred_future = forecast_head(h_clean)
+```
+
+Transformer가 단순히 빠진 값을 복원하는 것뿐 아니라, 정상적인 전력 시계열이 시간에 따라 어떤 방향으로 변화하는지를 학습하도록 한다. 이 objective를 위해서는 데이터 파이프라인이 window 뒤쪽의 실제 미래 h step도 함께 제공해야 한다.
 
 ### 4.3 Joint Pretraining Loss
 
@@ -251,16 +264,16 @@ unseen_X:     train/val      = Normal + (X 제외 4종)      (test 없음, all_t
 [SSL Pretraining]
 Normal power-meter time series (4채널)
         ↓
-Segment Masking (curriculum 15% → 40%)
-        ↓
-Transformer Encoder
-        ↓
- ┌─────────────────────┐
- │                     │
-Masked Reconstruction  Forecasting
-(주 objective)          (보조 objective, 미래 h step 예측)
- │                     │
- └──────────┬──────────┘
+ ┌──────────────────────────────────────────┐
+ │ masked pass                              │ clean pass
+ │ Segment Masking (고정 15%)              │ (원본 그대로)
+ │        ↓                                │        ↓
+ │ Transformer Encoder                     │ Transformer Encoder
+ │  (같은 weight, cat으로 1회 호출)        │
+ │        ↓                                │        ↓
+ │ Reconstruction Head                     │ Forecasting Head
+ │ (주 objective)                          │ (보조 objective, 미래 h step 예측)
+ └─────────────────────────────────────────┘
             ↓
 L_pretrain = L_mask + lambda * L_forecast     (lambda ≈ 0.1~0.2)
 

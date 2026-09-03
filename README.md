@@ -2,12 +2,12 @@
 
 네트워크로 측정값을 전송하는 교내 전력계(power meter)의 시계열 데이터를 대상으로, 사이버 공격에 의해 변조된 측정값을 탐지하는 프로젝트입니다.
 
-Self-Supervised Learning(SSL)으로 정상 전력 시계열의 패턴을 먼저 학습한 뒤, 이 pretrained Transformer 인코더를 완전히 freeze한 채(linear probing) 두 개의 독립된 downstream head를 학습합니다.
+Self-Supervised Learning(SSL)으로 정상 전력 시계열의 패턴을 먼저 학습한 뒤, 이 pretrained Transformer 인코더에 두 개의 독립된 downstream head를 붙여 학습합니다. encoder는 기본적으로 fine-tuning(Tier 1: 전체 LayerNorm, Tier 2: 전체 LayerNorm + 마지막 block attention/FFN)하며, `--mode t1/t2` CLI 인자로 선택합니다.
 
 1. Attack Detection — 공격 여부 판단 (binary: Normal vs Attack)
 2. Attack Classification — 공격 유형 분류 (multi-class, Normal 제외)
 
-두 head는 파라미터·loss·checkpoint가 완전히 분리된 별도의 모델입니다 (서로의 gradient에 영향을 주지 않음). 다만 encoder가 frozen이라 fold 하나당 encoder는 한 번만 통과시키고, 그 결과로 두 head를 같은 스크립트 안에서 함께 학습합니다 (아래 워크플로우 참고).
+두 head는 파라미터·loss·checkpoint가 완전히 분리된 별도의 모델입니다 (서로의 gradient에 영향을 주지 않음). fold 하나당 encoder를 한 번만 통과시키고, 그 결과로 두 head를 같은 스크립트 안에서 함께 학습합니다 (아래 워크플로우 참고).
 
 ## 데이터
 
@@ -39,7 +39,7 @@ Attack Detection 모델        Attack Classification 모델
 Normal(0) / Attack(1)        공격 유형 (Normal 제외 샘플만 학습)
 ```
 
-Transformer Encoder는 pretrain 단계에서 먼저 학습되고, downstream에서는 이 encoder를 freeze(파라미터 업데이트 없음, linear probing)한 채로 Detection head와 Classification head를 각각 독립적으로 학습합니다. encoder가 fold·head에 관계없이 항상 동일하므로, fold 하나당 encoder forward는 한 번만 수행하고 그 z_t로 두 head를 함께 학습합니다.
+Transformer Encoder는 pretrain 단계에서 먼저 학습되고, downstream에서는 이 pretrained encoder를 fine-tuning(Tier 1/2)하면서 Detection head와 Classification head를 각각 독립적으로 학습합니다. fold 하나당 encoder forward는 한 번만 수행하고 그 z_t로 두 head를 함께 학습합니다.
 
 ## 디렉토리 구조
 
@@ -81,7 +81,7 @@ campus-power-ad/
 │   │       ├── detection_head.py         # MeanPool+MaxPool → MLP → binary
 │   │       └── classification_head.py    # MeanPool+MaxPool → MLP → multi-class
 │   ├── ssl/
-│   │   ├── masking.py                    # segment 단위 curriculum masking (15%→40%)
+│   │   ├── masking.py                    # segment 단위 고정 마스킹 (15%)
 │   │   └── losses.py                     # L_mask + lambda * L_forecast
 │   ├── engine/
 │   │   ├── pretrain.py
@@ -129,7 +129,7 @@ campus-power-ad/
 
 ## Pretraining
 
-정상 시계열에 segment 단위 masking(15%→40% curriculum)을 적용한 Masked Reconstruction(주 objective)과, window 이후 미래 h step을 예측하는 Forecasting(보조 objective, weight λ≈0.1~0.2)을 같은 step에서 함께 학습합니다.
+정상 시계열에 segment 단위 고정 마스킹(15%)을 적용한 Masked Reconstruction(주 objective)과, 마스킹 없는 원본 window로 미래 h step을 예측하는 Forecasting(보조 objective, weight λ≈0.1~0.2)을 같은 step에서 함께 학습합니다. 두 objective는 forward pass를 분리합니다 — masked pass → Reconstruction head, clean pass → Forecasting head.
 
 ```
 L_pretrain = L_mask + lambda * L_forecast
@@ -199,9 +199,9 @@ python scripts/infer.py --ckpt checkpoints/downstream/all_type/detector/best.pt 
 
 ## 설계 원칙
 
-- `models/encoder.py`의 Transformer 백본은 pretrain에서만 학습되고, downstream에서는 완전히 freeze됩니다 (linear probing — 파라미터 업데이트 없음). 12개 모델 전부 동일한 pretrained encoder를 그대로 씁니다.
+- `models/encoder.py`의 Transformer 백본은 pretrain에서 먼저 학습되고, downstream에서는 fine-tuning 범위를 선택해서 씁니다. Tier 1(`--mode t1`): 전체 LayerNorm affine만 학습 가능(~2K params). Tier 2(`--mode t2`): 전체 LayerNorm + 마지막 transformer block의 attention/FFN 전체(~68K params). 12개 모델 전부 동일한 pretrained encoder 초기값에서 시작합니다.
 - Attack Detection과 Attack Classification은 역할이 다른 별개의 모델입니다 — Detection은 "공격인가 아닌가", Classification은 "공격이라면 어떤 유형인가"만 담당하며, 파라미터·loss·checkpoint가 완전히 분리된 독립적인 모델입니다 (서로의 gradient에 영향을 주지 않음).
-- encoder가 frozen이라 fold·head 조합과 무관하게 항상 같은 결과를 내므로, `train_downstream.py`가 fold 하나당 encoder forward를 1번만 수행하고 그 z_t로 Detection head와 Classification head를 같은 실행 안에서 함께 학습합니다 (스크립트 실행은 fold당 1번, 총 6번 — 모델 개수는 여전히 12개).
+- `train_downstream.py`는 fold 하나당 encoder forward를 1번만 수행하고 그 z_t로 Detection head와 Classification head를 같은 실행 안에서 함께 학습합니다 (스크립트 실행은 fold당 1번, 총 6번 — 모델 개수는 여전히 12개). fine-tuning 모드(`--mode t1/t2`)를 쓸 때는 각 head마다 encoder 파라미터가 별도로 업데이트됩니다.
 - 두 head 다 all_type 1개 + unseen fold 5개, 총 6개 fold로 학습·평가되므로 전체 모델은 12개입니다. config 파일은 1개(`configs/downstream/default.yaml`)뿐이고 `--fold` CLI 인자로 fold를 선택합니다 (생략 시 6개 fold 전체 순차 실행).
 - `configs/downstream/attack_injection.yaml`이 공격 파라미터와 fold별 데이터 생성 방식의 단일 출처입니다. 모든 fold 데이터는 한 번만, 고정 시드로 생성하며 Detection·Classification이 이를 공유합니다.
 - unseen fold의 train/val은 held-out 타입을 완전히 제외하고, Detection 평가의 test는 all_type의 test를 6개 모델이 공유합니다.
