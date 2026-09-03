@@ -160,14 +160,14 @@ def inject_instant_spike(
     duration_steps: list[int],
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """윈도우 채널 로컬 평균 × (1 + magnitude) 값으로 duration 동안 설정."""
+    """윈도우 채널 로컬 최대값 × (1 + magnitude) 값으로 duration 동안 설정."""
     corrupted = window_raw.copy()
     T = len(window_raw)
     duration = int(rng.integers(duration_steps[0], duration_steps[1] + 1))
     start = int(rng.integers(0, max(1, T - duration + 1)))
-    local_mean = abs(window_raw[:, channel].mean()) + 1e-6
+    local_max = abs(window_raw[:, channel].max()) + 1e-6
     mag = float(rng.uniform(magnitude[0], magnitude[1]))
-    corrupted[start:start + duration, channel] = local_mean * (1.0 + mag)
+    corrupted[start:start + duration, channel] = local_max * (1.0 + mag)
     mask = np.zeros(T, dtype=bool)
     mask[start:start + duration] = True
     return corrupted, mask

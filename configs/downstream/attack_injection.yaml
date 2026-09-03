@@ -33,7 +33,7 @@ anomaly_types:
 
   - type: pulse_plateau         # 구간 시작 직전 값의 magnitude배로 유지
     prob: 0.2
-    magnitude: [1.5, 2.5]
+    magnitude: [2.5, 5.0]
     duration_steps: [8, 48]
 
   - type: replay                # 동일 윈도우 비겹침 구간 복사 → 경계 불연속 신호
