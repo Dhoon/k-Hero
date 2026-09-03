@@ -49,7 +49,7 @@ def diag_checkpoint(cfg: dict) -> nn.Module | None:
     print(f"  설정 경로 : {ckpt_path.resolve()}")
 
     if not ckpt_path.exists():
-        print("  [FAIL] 파일 없음 — random init 폴백 또는 에러 발생")
+        print("  [FAIL] 파일 없음 - random init 폴백 또는 에러 발생")
         return None
 
     size_mb = ckpt_path.stat().st_size / 1024 / 1024
@@ -64,7 +64,7 @@ def diag_checkpoint(cfg: dict) -> nn.Module | None:
         keys = list(state.keys())
         print(f"  checkpoint keys : {keys}")
         if "encoder" not in state:
-            print("  [WARN] 'encoder' 키 없음 — state_dict 전체를 encoder로 간주")
+            print("  [WARN] 'encoder' 키 없음 - state_dict 전체를 encoder로 간주")
         else:
             enc_state = state["encoder"]
             n_params = sum(v.numel() for v in enc_state.values())
@@ -74,7 +74,7 @@ def diag_checkpoint(cfg: dict) -> nn.Module | None:
             print(f"  param norm (mean/min/max): "
                   f"{np.mean(norms):.4f} / {min(norms):.4f} / {max(norms):.4f}")
             if np.mean(norms) < 1e-6:
-                print("  [WARN] 파라미터 norm이 거의 0 — pretrain이 제대로 저장 안 됐을 수 있음")
+                print("  [WARN] 파라미터 norm이 거의 0 - pretrain이 제대로 저장 안 됐을 수 있음")
         if "best_val_loss" in state:
             print(f"  best_val_loss   : {state['best_val_loss']:.6f}")
         if "epoch" in state:
@@ -137,7 +137,7 @@ def diag_features(encoder: nn.Module, cfg: dict) -> None:
 
     ds_dir = Path(cfg["downstream_dir"]) / "all_type" / "train"
     if not ds_dir.exists():
-        print(f"  [SKIP] {ds_dir} 없음 — prepare_downstream_data.py 먼저 실행 필요")
+        print(f"  [SKIP] {ds_dir} 없음 - prepare_downstream_data.py 먼저 실행 필요")
         return
 
     ds = DownstreamFoldDataset(ds_dir)
@@ -171,7 +171,7 @@ def diag_features(encoder: nn.Module, cfg: dict) -> None:
     print(f"  Normal  feature std (mean over dims): {n_std:.6f}")
     print(f"  Attack  feature std (mean over dims): {a_std:.6f}")
     if max(n_std, a_std) < 1e-4:
-        print("  [WARN] 분산이 극히 작음 — encoder output이 거의 상수 → 학습 불가")
+        print("  [WARN] 분산이 극히 작음 - encoder output이 거의 상수 → 학습 불가")
 
     # Normal/Attack 간 코사인 유사도
     n_mean = n_feat.mean(0)
@@ -211,6 +211,87 @@ def diag_features(encoder: nn.Module, cfg: dict) -> None:
     if len(nn_dists) and len(dists):
         ratio = dists.mean() / (nn_dists.mean() + 1e-9)
         print(f"  inter/intra 비율: {ratio:.3f}  (>1이면 클래스 간 분리됨, <1이면 같이 뭉침)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 진단 2b: 공격 유형별 Normal vs Attack 분리도
+# ─────────────────────────────────────────────────────────────────────────────
+
+def diag_features_per_type(encoder: nn.Module, cfg: dict, n_sample: int = 32) -> None:
+    """Normal vs 각 공격 유형별 pooled feature 분리도.
+
+    inter/intra < 1 이면 그 유형이 Normal과 뭉쳐 있어 linear probing으로 구분 불가.
+    LayerNorm이 magnitude를 정규화하는 특성상 Scale Down / Pulse Plateau가 특히 취약할 것으로 예상.
+    """
+    print("\n" + "=" * 60)
+    print("DIAG 2b: 공격 유형별 Normal vs Attack 분리도")
+    print("=" * 60)
+
+    ds_dir = Path(cfg["downstream_dir"]) / "all_type" / "train"
+    if not ds_dir.exists():
+        print(f"  [SKIP] {ds_dir} 없음")
+        return
+
+    ds = DownstreamFoldDataset(ds_dir)
+    bl = ds.binary_label.numpy()
+    tl = ds.type_label.numpy()
+    n_idx = np.where(bl == 0)[0]
+
+    def _pool(idxs):
+        xs  = torch.stack([ds.X[i]         for i in idxs])
+        tfs = torch.stack([ds.time_feat[i]  for i in idxs])
+        with torch.no_grad():
+            z      = encoder(xs, tfs)
+            pooled = torch.cat([z.mean(1), z.max(1).values], dim=-1)
+        return pooled.numpy()
+
+    rng = np.random.default_rng(42)
+
+    # Normal 기준
+    ni     = rng.choice(n_idx, min(n_sample, len(n_idx)), replace=False)
+    n_feat = _pool(ni)
+    n_mean = n_feat.mean(0)
+    nn_dists = np.array([
+        np.linalg.norm(n_feat[i] - n_feat[j])
+        for i in range(len(ni)) for j in range(i + 1, len(ni))
+    ])
+    intra_n = nn_dists.mean() if len(nn_dists) else 0.0
+
+    from src.adt.data.labeling import TYPE_IDX as _TYPE_IDX
+
+    header = f"  {'attack type':<22} {'cos_sim':>8} {'inter_L2':>10} {'intra_N_L2':>11} {'inter/intra':>12}"
+    print(f"\n{header}")
+    print("  " + "-" * 67)
+
+    for type_name, orig_idx in sorted(_TYPE_IDX.items(), key=lambda x: x[1]):
+        a_idx = np.where((bl == 1) & (tl == orig_idx))[0]
+        if len(a_idx) < 4:
+            print(f"  {type_name:<22} [샘플 부족: {len(a_idx)}개]")
+            continue
+
+        ai     = rng.choice(a_idx, min(n_sample, len(a_idx)), replace=False)
+        a_feat = _pool(ai)
+        a_mean = a_feat.mean(0)
+
+        cos_sim = float(
+            np.dot(n_mean, a_mean)
+            / (np.linalg.norm(n_mean) * np.linalg.norm(a_mean) + 1e-9)
+        )
+        inter_dists = np.array([
+            np.linalg.norm(n_feat[i] - a_feat[j])
+            for i in range(len(ni)) for j in range(len(ai))
+        ])
+        inter_mean = inter_dists.mean()
+        ratio      = inter_mean / (intra_n + 1e-9)
+
+        flag = "  ← 분리 어려움 (LayerNorm magnitude 소거 의심)" if ratio < 1.0 else ""
+        print(
+            f"  {type_name:<22} {cos_sim:>8.4f} {inter_mean:>10.4f} "
+            f"{intra_n:>11.4f} {ratio:>12.3f}{flag}"
+        )
+
+    print(f"\n  기준: inter/intra > 1 이면 분리됨, < 1 이면 Normal과 뭉침")
+    print(f"  Normal intra L2 (기준값): {intra_n:.4f}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,7 +336,7 @@ def diag_head_learning(encoder: nn.Module, cfg: dict) -> None:
         return sum(p.norm().item() ** 2 for p in m.parameters()) ** 0.5
 
     norms_before = _param_norm(det_head)
-    print(f"  det_head param norm — before: {norms_before:.6f}")
+    print(f"  det_head param norm - before: {norms_before:.6f}")
 
     loader = torch.utils.data.DataLoader(ds, batch_size=64, shuffle=True)
     N_STEPS = 10
@@ -277,9 +358,9 @@ def diag_head_learning(encoder: nn.Module, cfg: dict) -> None:
 
     norms_after = _param_norm(det_head)
     delta = abs(norms_after - norms_before)
-    print(f"  det_head param norm — after : {norms_after:.6f}  Δ={delta:.6f}")
+    print(f"  det_head param norm - after : {norms_after:.6f}  delta={delta:.6f}")
     if delta < 1e-7:
-        print("  [WARN] det_head 파라미터가 전혀 안 바뀜 — gradient 흐름 문제")
+        print("  [WARN] det_head 파라미터가 전혀 안 바뀜 - gradient 흐름 문제")
     else:
         print("  [OK] det_head 파라미터 업데이트 확인")
 
@@ -358,15 +439,22 @@ def diag_scheduler(cfg: dict) -> None:
     else:
         print(f"\n  warmup {warmup_done_epoch}epoch에 완료, 이후 cosine decay")
 
-    # batch당 step()이 호출되는 경우 비교
-    print(f"\n  [참고] batch당 step() 호출 시:")
-    optim2 = torch.optim.AdamW(d.parameters(), lr=base_lr)
+    # batch당 step()이 호출되는 경우 비교 (수정된 코드의 실제 동작)
+    # get_last_lr()은 이미 base_lr이 곱해진 LR을 반환함 - 다시 곱하지 말 것
+    print(f"\n  [참고] batch당 step() 호출 시 (수정된 코드):")
+    d2 = nn.Linear(1, 1)
+    optim2 = torch.optim.AdamW(d2.parameters(), lr=base_lr)
     sched2 = _cosine_lr(optim2, total_steps_sched, warmup_steps)
-    milestones = [0, warmup_steps - 1, warmup_steps, total_steps_sched // 2, total_steps_sched - 1]
+    milestones = set([0, warmup_steps - 1, warmup_steps, warmup_steps + 1,
+                      total_steps_sched // 2, total_steps_sched - 1])
+    print(f"  {'step':>8}  {'lr (optim)':>12}  {'% of base_lr':>14}")
     for step_i in range(total_steps_sched):
-        lr_s = sched2.get_last_lr()[0]
-        if step_i in milestones or step_i == warmup_steps:
-            print(f"    step={step_i:6d}  lr_scale={lr_s:.6f}  eff_lr={base_lr*lr_s:.2e}")
+        if step_i in milestones:
+            # optimizer.param_groups[0]['lr']이 실제 LR
+            actual_lr = optim2.param_groups[0]["lr"]
+            pct = actual_lr / base_lr * 100
+            note = " ← warmup 끝 (여기서 100%)" if step_i == warmup_steps else ""
+            print(f"  {step_i:>8}  {actual_lr:>12.6e}  {pct:>13.1f}%{note}")
         sched2.step()
 
 
@@ -400,6 +488,7 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
                 pass  # 이미 diag_checkpoint에서 보고함
 
         diag_features(encoder, cfg)
+        diag_features_per_type(encoder, cfg)
         diag_head_learning(encoder, cfg)
 
     diag_scheduler(cfg)
