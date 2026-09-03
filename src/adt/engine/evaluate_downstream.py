@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, confusion_matrix,
+    precision_recall_curve, roc_auc_score, average_precision_score,
 )
 
 from src.adt.data.labeling import TYPE_IDX
@@ -49,6 +50,76 @@ def _build_encoder(cfg: dict, device: torch.device) -> nn.Module:
         d_ff=mc["d_ff"],
         dropout=mc["dropout"],
     ).to(device)
+
+# =========================================================================
+# Threshold 탐색 / 저장
+# =========================================================================
+
+def find_best_threshold(
+    probs: np.ndarray,
+    labels: np.ndarray,
+) -> tuple[float, float]:
+    """val set sigmoid 확률 → F1 최대 threshold 탐색.
+
+    Args:
+        probs : (N,) sigmoid 확률 (0~1)
+        labels: (N,) int binary label
+
+    Returns:
+        (best_threshold, best_f1)
+    """
+    precisions, recalls, thresholds = precision_recall_curve(labels, probs)
+    # precision_recall_curve: len(thresholds) == len(precisions) - 1
+    denom = precisions[:-1] + recalls[:-1]
+    f1s = np.where(denom > 0, 2 * precisions[:-1] * recalls[:-1] / denom, 0.0)
+    best_idx = int(np.argmax(f1s))
+    return float(thresholds[best_idx]), float(f1s[best_idx])
+
+
+def calibrate_threshold(
+    fold_name: str,
+    cfg: dict[str, Any],
+    eval_encoder: nn.Module,
+    det_head: nn.Module,
+    device: torch.device,
+    verbose: bool = True,
+) -> tuple[float, float]:
+    """val set으로 최적 detection threshold 탐색 후 threshold.json 저장.
+
+    threshold는 val set에서만 결정 — test set 절대 사용 금지 (data leakage).
+
+    Returns:
+        (threshold, val_f1)  — sigmoid 확률 기준 threshold
+    """
+    downstream_dir = Path(cfg["downstream_dir"])
+    det_cfg = cfg["detection"]
+
+    val_dir = downstream_dir / fold_name / "val"
+    ds_val = DownstreamFoldDataset(val_dir)
+    val_loader = DataLoader(
+        ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
+    )
+
+    logits_np, bl_np, _ = _infer(eval_encoder, det_head, val_loader, device)
+    probs = torch.sigmoid(torch.from_numpy(logits_np)).numpy()
+
+    threshold, val_f1 = find_best_threshold(probs, bl_np)
+
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
+    det_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    thr_path = det_ckpt_dir / "threshold.json"
+    thr_path.write_text(
+        json.dumps({"threshold": threshold, "val_f1": val_f1}, indent=2),
+        encoding="utf-8",
+    )
+
+    if verbose:
+        print(
+            f"[threshold/{fold_name}] val best threshold={threshold:.4f}  "
+            f"val_f1={val_f1:.4f}  → saved: {thr_path}"
+        )
+    return threshold, val_f1
+
 
 # =========================================================================
 # 추론 헬퍼
@@ -93,7 +164,6 @@ def evaluate_fold(
     cfg: dict[str, Any],
     encoder: nn.Module,
     device: torch.device,
-    threshold: float = 0.5,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """단일 fold의 detection + classification 평가.
@@ -181,34 +251,69 @@ def evaluate_fold(
 
     # ── Detection 평가 ────────────────────────────────────────────────────
     det_logits, bl_all, tl_all = _infer(eval_encoder, det_head, test_loader, device)
-    pred_binary = (det_logits >= 0.0).astype(np.int32)  # logit threshold=0
+    probs = torch.sigmoid(torch.from_numpy(det_logits)).numpy()  # (N,) 0~1
 
-    det_metrics = {
-        "accuracy":  float(accuracy_score(bl_all, pred_binary)),
-        "precision": float(precision_score(bl_all, pred_binary, zero_division=0)),
-        "recall":    float(recall_score(bl_all, pred_binary, zero_division=0)),
-        "f1":        float(f1_score(bl_all, pred_binary, zero_division=0)),
-    }
+    # val set으로 최적 threshold 탐색 (data leakage 방지 — test 미사용)
+    threshold, val_f1 = calibrate_threshold(
+        fold_name, cfg, eval_encoder, det_head, device, verbose=verbose
+    )
 
-    # per-type detection recall (Attack type별 탐지율)
+    pred_default = (probs >= 0.5).astype(np.int32)
+    pred_optimal = (probs >  threshold).astype(np.int32)
+
+    def _det_metrics(pred: np.ndarray) -> dict[str, float]:
+        return {
+            "accuracy":  float(accuracy_score(bl_all, pred)),
+            "precision": float(precision_score(bl_all, pred, zero_division=0)),
+            "recall":    float(recall_score(bl_all, pred, zero_division=0)),
+            "f1":        float(f1_score(bl_all, pred, zero_division=0)),
+        }
+
+    metrics_default = _det_metrics(pred_default)
+    metrics_optimal = _det_metrics(pred_optimal)
+
+    try:
+        auc_roc = float(roc_auc_score(bl_all, probs))
+    except Exception:
+        auc_roc = float("nan")
+    try:
+        auc_pr = float(average_precision_score(bl_all, probs))
+    except Exception:
+        auc_pr = float("nan")
+
     per_type_recall: dict[str, float] = {}
     unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
     for type_name, orig_idx in TYPE_IDX.items():
         type_mask = (tl_all == orig_idx)
         if type_mask.sum() > 0:
-            recall_val = float(pred_binary[type_mask].mean())
-            per_type_recall[type_name] = recall_val
+            per_type_recall[type_name] = float(pred_optimal[type_mask].mean())
 
-    det_metrics["per_type_recall"] = per_type_recall
+    det_metrics = {
+        **metrics_optimal,
+        "threshold":       threshold,
+        "val_f1":          val_f1,
+        "auc_roc":         auc_roc,
+        "auc_pr":          auc_pr,
+        "default_thr":     metrics_default,
+        "per_type_recall": per_type_recall,
+    }
 
     if verbose:
+        print(f"[eval/{fold_name}] Detection  threshold={threshold:.4f}  (val_f1={val_f1:.4f})")
         print(
-            f"[eval/{fold_name}] Detection  "
-            f"acc={det_metrics['accuracy']:.3f}  "
-            f"prec={det_metrics['precision']:.3f}  "
-            f"rec={det_metrics['recall']:.3f}  "
-            f"F1={det_metrics['f1']:.3f}"
+            f"  default(0.50):           acc={metrics_default['accuracy']:.3f}  "
+            f"prec={metrics_default['precision']:.3f}  "
+            f"rec={metrics_default['recall']:.3f}  "
+            f"F1={metrics_default['f1']:.3f}"
         )
+        print(
+            f"  optimal({threshold:.4f}): acc={metrics_optimal['accuracy']:.3f}  "
+            f"prec={metrics_optimal['precision']:.3f}  "
+            f"rec={metrics_optimal['recall']:.3f}  "
+            f"F1={metrics_optimal['f1']:.3f}"
+        )
+        print(f"  AUC-ROC={auc_roc:.4f}  AUC-PR={auc_pr:.4f}")
+        print("  per-type recall (optimal threshold):")
         for tn, r in sorted(per_type_recall.items()):
             mark = "  ◀ UNSEEN" if tn == unseen_type else ""
             print(f"    {tn:20s} recall={r:.3f}{mark}")
