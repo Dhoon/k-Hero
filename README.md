@@ -171,16 +171,16 @@ python scripts/pretrain.py --config configs/pretrain/default.yaml
 python scripts/prepare_downstream_data.py --config configs/downstream/attack_injection.yaml
 
 # 4) Attack Detection + Classification 학습
-#    fold 하나당 encoder(frozen)를 1번만 통과시키고, 그 결과로 detector+classifier를 같은 스크립트 안에서 함께 학습
+#    --mode: t1=LayerNorm만 fine-tune, t2=LayerNorm+마지막 block (생략 시 yaml 기본값 사용)
 #    (a) 전체 6개 fold를 한 번에 (--fold 생략 또는 all)
-python scripts/train_downstream.py --config configs/downstream/default.yaml
+python scripts/train_downstream.py --config configs/downstream/default.yaml --mode t2
 #    (b) fold 하나만 개별 실행하고 싶을 때
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold all_type
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_replay
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold all_type --mode t2
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down --mode t2
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp --mode t2
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau --mode t2
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_replay --mode t2
+python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike --mode t2
 
 # 5) 평가 (Detection은 6개 fold 전부 all_type의 test set으로 평가, Classification은 fold별 known-type만)
 #    (a) 전체 6개 fold를 한 번에 (--fold 생략 또는 all)
