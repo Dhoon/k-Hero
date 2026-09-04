@@ -20,16 +20,18 @@ try:
     import matplotlib.pyplot as plt
     import matplotlib.font_manager as _fm
     _MPL_OK = True
-    # 한글 폰트: Windows=Malgun Gothic, Linux=NanumGothic, fallback=sans-serif
-    _KO_FONTS = ["Malgun Gothic", "NanumGothic", "Apple SD Gothic Neo", "DejaVu Sans"]
+    _KO_FONT_OK = False
+    _KO_FONTS = ["Malgun Gothic", "NanumGothic", "Apple SD Gothic Neo"]
     _avail = {f.name for f in _fm.fontManager.ttflist}
     for _f in _KO_FONTS:
         if _f in _avail:
             matplotlib.rcParams["font.family"] = _f
+            _KO_FONT_OK = True
             break
     matplotlib.rcParams["axes.unicode_minus"] = False
 except ImportError:
     _MPL_OK = False
+    _KO_FONT_OK = False
 
 import numpy as np
 import torch
@@ -454,6 +456,13 @@ _KO_LABEL = {
     "ramp":          "ramp\n(점진적 드리프트)",
     "replay":        "replay\n(재생 공격)",
 }
+_EN_LABEL = {
+    "instant_spike": "instant_spike\n(abrupt absolute spike)",
+    "pulse_plateau": "pulse_plateau\n(sustained high plateau)",
+    "scale_down":    "scale_down\n(magnitude reduction)",
+    "ramp":          "ramp\n(gradual drift)",
+    "replay":        "replay\n(replay attack)",
+}
 _TYPE_ORDER = ["instant_spike", "pulse_plateau", "scale_down", "ramp", "replay"]
 
 
@@ -478,7 +487,8 @@ def plot_per_type_recall(
 
     types   = [t for t in _TYPE_ORDER if t in per_type_recall]
     recalls = [per_type_recall[t] * 100 for t in types]
-    labels  = [_KO_LABEL.get(t, t) for t in types]
+    _label_map = _KO_LABEL if _KO_FONT_OK else _EN_LABEL
+    labels  = [_label_map.get(t, t) for t in types]
     colors  = [_bar_color(r) for r in recalls]
 
     fig, ax = plt.subplots(figsize=(9, max(3, len(types) * 0.95 + 1.2)))
@@ -494,11 +504,12 @@ def plot_per_type_recall(
 
     ax.axvline(50, color="#555", linestyle="--", linewidth=1.2, alpha=0.6)
     ax.set_xlim(0, 115)
-    ax.set_xlabel("탐지율 (%)", fontsize=12)
-    ax.set_title(
-        f"합성 공격 유형별 탐지율\n({fold_name})",
-        fontsize=14, fontweight="bold", pad=12,
-    )
+    if _KO_FONT_OK:
+        ax.set_xlabel("탐지율 (%)", fontsize=12)
+        ax.set_title(f"합성 공격 유형별 탐지율\n({fold_name})", fontsize=14, fontweight="bold", pad=12)
+    else:
+        ax.set_xlabel("Detection Rate (%)", fontsize=12)
+        ax.set_title(f"Detection Rate by Attack Type\n({fold_name})", fontsize=14, fontweight="bold", pad=12)
     ax.invert_yaxis()
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
