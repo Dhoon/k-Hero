@@ -14,6 +14,23 @@ import json
 from pathlib import Path
 from typing import Any
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.font_manager as _fm
+    _MPL_OK = True
+    # 한글 폰트: Windows=Malgun Gothic, Linux=NanumGothic, fallback=sans-serif
+    _KO_FONTS = ["Malgun Gothic", "NanumGothic", "Apple SD Gothic Neo", "DejaVu Sans"]
+    _avail = {f.name for f in _fm.fontManager.ttflist}
+    for _f in _KO_FONTS:
+        if _f in _avail:
+            matplotlib.rcParams["font.family"] = _f
+            break
+    matplotlib.rcParams["axes.unicode_minus"] = False
+except ImportError:
+    _MPL_OK = False
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -394,6 +411,10 @@ def evaluate_fold(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    # ── Figure ────────────────────────────────────────────────────────────
+    fig_dir = Path(cfg.get("figure_dir", "outputs/figures")) / fold_name
+    plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
+
     return results
 
 
@@ -420,6 +441,74 @@ def _infer_filtered(
     bl = dataset.binary_label[indices].numpy().astype(np.int32)
     tl = dataset.type_label[indices].numpy().astype(np.int32)
     return logits, bl, tl
+
+
+# =========================================================================
+# Figure 생성
+# =========================================================================
+
+_KO_LABEL = {
+    "instant_spike": "instant_spike\n(급격한 절대적 이상)",
+    "pulse_plateau": "pulse_plateau\n(장시간 완만한 상승)",
+    "scale_down":    "scale_down\n(사용량 축소 조작)",
+    "ramp":          "ramp\n(점진적 드리프트)",
+    "replay":        "replay\n(재생 공격)",
+}
+_TYPE_ORDER = ["instant_spike", "pulse_plateau", "scale_down", "ramp", "replay"]
+
+
+def _bar_color(recall_pct: float) -> str:
+    if recall_pct >= 70:
+        return "#1B3A6B"
+    if recall_pct >= 40:
+        return "#3B6BC1"
+    return "#9BAFD4"
+
+
+def plot_per_type_recall(
+    fold_name: str,
+    per_type_recall: dict[str, float],
+    out_dir: Path,
+    unseen_type: str | None = None,
+) -> None:
+    """공격 유형별 detection recall 수평 바차트를 out_dir/per_type_recall.png에 저장."""
+    if not _MPL_OK:
+        print("[figure] matplotlib 없음 — figure 생략")
+        return
+
+    types   = [t for t in _TYPE_ORDER if t in per_type_recall]
+    recalls = [per_type_recall[t] * 100 for t in types]
+    labels  = [_KO_LABEL.get(t, t) for t in types]
+    colors  = [_bar_color(r) for r in recalls]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(types) * 0.95 + 1.2)))
+    bars = ax.barh(labels, recalls, color=colors, height=0.55)
+
+    for bar, r in zip(bars, recalls):
+        ax.text(
+            bar.get_width() + 1.2,
+            bar.get_y() + bar.get_height() / 2,
+            f"{r:.1f}%",
+            va="center", ha="left", fontsize=11, fontweight="bold",
+        )
+
+    ax.axvline(50, color="#555", linestyle="--", linewidth=1.2, alpha=0.6)
+    ax.set_xlim(0, 115)
+    ax.set_xlabel("탐지율 (%)", fontsize=12)
+    ax.set_title(
+        f"합성 공격 유형별 탐지율\n({fold_name})",
+        fontsize=14, fontweight="bold", pad=12,
+    )
+    ax.invert_yaxis()
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "per_type_recall.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[figure] {out_path}")
 
 
 # =========================================================================
