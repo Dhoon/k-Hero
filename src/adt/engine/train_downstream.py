@@ -449,7 +449,7 @@ def train_fold(
 
     # ── 데이터 로드 ─────────────────────────────────────────────────────
     ds_train = DownstreamFoldDataset(fold_dir / "train")
-    ds_val   = DownstreamFoldDataset(fold_dir / "val")
+    ds_val   = DownstreamFoldDataset(fold_dir / "val_50_50")  # AUC-ROC checkpoint 기준
 
     train_tl = ds_train.type_label.numpy()
     _, class_names, type_to_class = compute_class_info(train_tl)

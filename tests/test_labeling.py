@@ -148,10 +148,10 @@ class TestGenerateDownstreamFolds:
         """unseen_scale_down fold의 type_label에 scale_down(=0) 없어야 함."""
         out, _ = self._run(tmp_path, pretrain_dir, fold_cfg, identity_scaler)
         sd_idx = TYPE_IDX["scale_down"]
-        for split in ("train", "val"):
-            tl = np.load(out / "unseen_scale_down" / split / "type_label.npy")
+        for split_dir in ("train", "val_50_50", "val_9_1"):
+            tl = np.load(out / "unseen_scale_down" / split_dir / "type_label.npy")
             assert sd_idx not in tl, \
-                f"scale_down(idx={sd_idx}) found in unseen_scale_down/{split}"
+                f"scale_down(idx={sd_idx}) found in unseen_scale_down/{split_dir}"
 
     def test_all_type_contains_all_attack_types(
         self, tmp_path, pretrain_dir, fold_cfg, identity_scaler
@@ -187,37 +187,42 @@ class TestGenerateDownstreamFolds:
     def test_binary_label_consistent_with_type_label(
         self, tmp_path, pretrain_dir, fold_cfg, identity_scaler
     ):
-        """binary_label[i] == (type_label[i] >= 0)."""
+        """binary_label[i] == (type_label[i] >= 0) — 모든 split_dir에서 검증."""
         out, _ = self._run(tmp_path, pretrain_dir, fold_cfg, identity_scaler)
         for fold_name in ("all_type", "unseen_scale_down"):
-            bl = np.load(out / fold_name / "train" / "binary_label.npy")
-            tl = np.load(out / fold_name / "train" / "type_label.npy")
-            expected = (tl >= 0).astype(np.int32)
-            np.testing.assert_array_equal(bl, expected, err_msg=f"{fold_name}/train")
+            for split_dir in ("train", "val_50_50", "val_9_1"):
+                bl = np.load(out / fold_name / split_dir / "binary_label.npy")
+                tl = np.load(out / fold_name / split_dir / "type_label.npy")
+                expected = (tl >= 0).astype(np.int32)
+                np.testing.assert_array_equal(
+                    bl, expected, err_msg=f"{fold_name}/{split_dir}"
+                )
 
     # ── 저장 파일 존재 확인 ────────────────────────────────────────────
 
     def test_all_expected_files_saved(
         self, tmp_path, pretrain_dir, fold_cfg, identity_scaler
     ):
+        # fold_cfg splits = ["train", "val"] →
+        #   생성: train/, val_50_50/, val_9_1/
         out, _ = self._run(tmp_path, pretrain_dir, fold_cfg, identity_scaler)
-        for fold_name, fd in [("all_type", fold_cfg["folds"][0]),
-                               ("unseen_scale_down", fold_cfg["folds"][1])]:
-            for split in fd["splits"]:
+        for fold_name in ("all_type", "unseen_scale_down"):
+            for split_dir in ("train", "val_50_50", "val_9_1"):
                 for fname in ("X.npy", "time_feat.npy",
                               "binary_label.npy", "type_label.npy"):
-                    assert (out / fold_name / split / fname).exists(), \
-                        f"missing: {fold_name}/{split}/{fname}"
+                    assert (out / fold_name / split_dir / fname).exists(), \
+                        f"missing: {fold_name}/{split_dir}/{fname}"
 
     # ── stats 반환값 ───────────────────────────────────────────────────
 
     def test_stats_counts_match_saved_files(
         self, tmp_path, pretrain_dir, fold_cfg, identity_scaler
     ):
+        # val → val_50_50 + val_9_1; train은 그대로
         out, stats = self._run(tmp_path, pretrain_dir, fold_cfg, identity_scaler)
         for fold_name in ("all_type", "unseen_scale_down"):
-            for split in ("train", "val"):
-                tl = np.load(out / fold_name / split / "type_label.npy")
-                reported_total = stats[fold_name][split]["total"]
+            for split_dir in ("train", "val_50_50", "val_9_1"):
+                tl = np.load(out / fold_name / split_dir / "type_label.npy")
+                reported_total = stats[fold_name][split_dir]["total"]
                 assert reported_total == len(tl), \
-                    f"stats total mismatch for {fold_name}/{split}"
+                    f"stats total mismatch for {fold_name}/{split_dir}"

@@ -31,7 +31,7 @@ def _load_cfg(path: str | Path) -> dict:
 
 def _print_stats(stats: dict) -> None:
     print("\n" + "=" * 65)
-    print(f"{'fold':<24} {'split':<6} {'total':>7} {'normal':>7} {'attack':>7} {'types'}")
+    print(f"{'fold':<24} {'split':<14} {'total':>7} {'normal':>7} {'attack':>7} {'types'}")
     print("=" * 65)
     for fold_name, splits in stats.items():
         for split, info in splits.items():
@@ -41,7 +41,7 @@ def _print_stats(stats: dict) -> None:
                 f"{t}:{cnt}" for t, cnt in sorted(info["attacks"].items())
             )
             print(
-                f"{fold_name:<24} {split:<6} {info['total']:>7,} "
+                f"{fold_name:<24} {split:<14} {info['total']:>7,} "
                 f"{info['normal']:>7,} {n_attack:>7,} ({atk_ratio:.1f}%)  "
                 f"{type_str}"
             )
@@ -75,7 +75,7 @@ def main(config_path: str = "configs/downstream/attack_injection.yaml") -> None:
     print(
         f"[downstream] pretrain_dir : {pretrain_dir}\n"
         f"[downstream] output_dir   : {output_dir}\n"
-        f"[downstream] injection_ratio : {cfg.get('injection_ratio', 0.1)}\n"
+        f"[downstream] balance      : 50:50 (train/val_50_50/test_50_50) + 9:1 subsampled (val_9_1/test_9_1)\n"
         f"[downstream] seed         : {cfg.get('seed', 42)}\n"
         f"[downstream] folds        : {len(cfg.get('folds', []))} defined"
     )

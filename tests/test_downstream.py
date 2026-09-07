@@ -368,7 +368,7 @@ class TestTrainFold:
     def _setup_fold(self, tmp_path, small_cfg, fold_name, n=N_TRAIN, types=None):
         ds_dir = Path(small_cfg["downstream_dir"])
         present = types if types is not None else list(range(5))
-        _make_fold_data(ds_dir, fold_name, ["train", "val"], n, present)
+        _make_fold_data(ds_dir, fold_name, ["train", "val_50_50"], n, present)
 
     def test_class_names_json_saved(self, tmp_path, small_cfg, encoder):
         fold = "all_type"
@@ -420,11 +420,15 @@ class TestFoldIteration:
         ds_dir = Path(small_cfg["downstream_dir"])
         for fold_name in ALL_FOLDS:
             unseen = FOLD_UNSEEN_TYPE.get(fold_name)
-            if unseen is not None:
-                types = [i for i in range(5) if i != TYPE_IDX[unseen]]
+            types  = (
+                [i for i in range(5) if i != TYPE_IDX[unseen]]
+                if unseen else list(range(5))
+            )
+            # train_fold reads val_50_50; evaluate_fold reads val_9_1 / test_50_50 / test_9_1
+            if fold_name == "all_type":
+                splits = ["train", "val_50_50", "val_9_1", "test_50_50", "test_9_1"]
             else:
-                types = list(range(5))
-            splits = ["train", "val"] if fold_name != "all_type" else ["train", "val", "test"]
+                splits = ["train", "val_50_50", "val_9_1"]
             _make_fold_data(ds_dir, fold_name, splits, n_per_split=64, type_labels_present=types)
 
     def test_train_all_folds_iterates_6_times(self, tmp_path, small_cfg, encoder):
@@ -472,15 +476,18 @@ class TestFoldIteration:
 
 class TestEvaluateFiltering:
     def _setup_and_train(self, tmp_path, small_cfg, encoder):
-        """all_type/test + all 6 folds를 만들고 all_type만 train."""
+        """all 6 folds 데이터 생성 후 all_type + unseen_scale_down을 학습."""
         ds_dir = Path(small_cfg["downstream_dir"])
         for fold_name in ALL_FOLDS:
             unseen = FOLD_UNSEEN_TYPE.get(fold_name)
-            types = (
+            types  = (
                 [i for i in range(5) if i != TYPE_IDX[unseen]]
                 if unseen else list(range(5))
             )
-            splits = ["train", "val"] if fold_name != "all_type" else ["train", "val", "test"]
+            if fold_name == "all_type":
+                splits = ["train", "val_50_50", "val_9_1", "test_50_50", "test_9_1"]
+            else:
+                splits = ["train", "val_50_50", "val_9_1"]
             _make_fold_data(ds_dir, fold_name, splits, n_per_split=64, type_labels_present=types)
 
         # all_type만 학습 (class_names.json 생성을 위해)
@@ -625,7 +632,7 @@ class TestEncoderFinetune:
 
         # fold 데이터 생성
         ds_dir = Path(ft_small_cfg["downstream_dir"])
-        _make_fold_data(ds_dir, "all_type", ["train", "val"], n_per_split=N_TRAIN)
+        _make_fold_data(ds_dir, "all_type", ["train", "val_50_50"], n_per_split=N_TRAIN)
 
         # train_fold 실행 (Phase 1 + Phase 2)
         train_fold("all_type", ft_small_cfg, enc, torch.device("cpu"), verbose=False)

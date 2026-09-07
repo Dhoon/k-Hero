@@ -113,7 +113,7 @@ def calibrate_threshold(
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg = cfg["detection"]
 
-    val_dir = downstream_dir / fold_name / "val"
+    val_dir = downstream_dir / fold_name / "val_9_1"  # 실전 분포(9:1)로 threshold 보정
     ds_val = DownstreamFoldDataset(val_dir)
     val_loader = DataLoader(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
@@ -200,12 +200,13 @@ def evaluate_fold(
     cls_cfg = cfg["classification"]
     model_cfg = cfg["model"]
 
-    # ── test set 로드 (항상 all_type/test) ──────────────────────────────
-    test_dir = downstream_dir / "all_type" / "test"
-    ds_test = DownstreamFoldDataset(test_dir)
-    test_loader = DataLoader(
-        ds_test, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
-    )
+    # ── test set 로드 (항상 all_type — 두 view) ─────────────────────────
+    test_50_dir = downstream_dir / "all_type" / "test_50_50"
+    test_9_dir  = downstream_dir / "all_type" / "test_9_1"
+    ds_test_50 = DownstreamFoldDataset(test_50_dir)
+    ds_test_9  = DownstreamFoldDataset(test_9_dir)
+    loader_50 = DataLoader(ds_test_50, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0)
+    loader_9  = DataLoader(ds_test_9,  batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0)
 
     # ── checkpoint 경로 ───────────────────────────────────────────────────
     det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
@@ -269,83 +270,93 @@ def evaluate_fold(
         eval_encoder = encoder
 
     # ── Detection 평가 ────────────────────────────────────────────────────
-    det_logits, bl_all, tl_all = _infer(eval_encoder, det_head, test_loader, device)
-    probs = torch.sigmoid(torch.from_numpy(det_logits)).numpy()  # (N,) 0~1
-
-    # val set으로 최적 threshold 탐색 (data leakage 방지 — test 미사용)
+    # threshold는 val_9_1(실전 분포)에서 F1-max sweep (calibrate_threshold 내부)
     threshold, val_f1 = calibrate_threshold(
         fold_name, cfg, eval_encoder, det_head, device, verbose=verbose
     )
 
-    pred_default = (probs >= 0.5).astype(np.int32)
-    pred_optimal = (probs >  threshold).astype(np.int32)
+    unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
 
-    def _det_metrics(pred: np.ndarray) -> dict[str, float]:
+    def _run_det_eval(
+        logits_np: np.ndarray,
+        bl_np: np.ndarray,
+        tl_np: np.ndarray,
+    ) -> dict[str, Any]:
+        probs_v = torch.sigmoid(torch.from_numpy(logits_np)).numpy()
+        pred_default = (probs_v >= 0.5).astype(np.int32)
+        pred_optimal = (probs_v >  threshold).astype(np.int32)
+
+        def _m(pred: np.ndarray) -> dict[str, float]:
+            return {
+                "accuracy":  float(accuracy_score(bl_np, pred)),
+                "precision": float(precision_score(bl_np, pred, zero_division=0)),
+                "recall":    float(recall_score(bl_np, pred, zero_division=0)),
+                "f1":        float(f1_score(bl_np, pred, zero_division=0)),
+            }
+
+        try:
+            auc_roc = float(roc_auc_score(bl_np, probs_v))
+        except Exception:
+            auc_roc = float("nan")
+        try:
+            auc_pr = float(average_precision_score(bl_np, probs_v))
+        except Exception:
+            auc_pr = float("nan")
+
+        ptr: dict[str, float] = {}
+        for type_name, orig_idx in TYPE_IDX.items():
+            mask = (tl_np == orig_idx)
+            if mask.sum() > 0:
+                ptr[type_name] = float(pred_optimal[mask].mean())
+
         return {
-            "accuracy":  float(accuracy_score(bl_all, pred)),
-            "precision": float(precision_score(bl_all, pred, zero_division=0)),
-            "recall":    float(recall_score(bl_all, pred, zero_division=0)),
-            "f1":        float(f1_score(bl_all, pred, zero_division=0)),
+            **_m(pred_optimal),
+            "threshold":       threshold,
+            "val_f1":          val_f1,
+            "auc_roc":         auc_roc,
+            "auc_pr":          auc_pr,
+            "default_thr":     _m(pred_default),
+            "per_type_recall": ptr,
         }
 
-    metrics_default = _det_metrics(pred_default)
-    metrics_optimal = _det_metrics(pred_optimal)
+    logits_50, bl_50, tl_50 = _infer(eval_encoder, det_head, loader_50, device)
+    logits_9,  bl_9,  tl_9  = _infer(eval_encoder, det_head, loader_9,  device)
 
-    try:
-        auc_roc = float(roc_auc_score(bl_all, probs))
-    except Exception:
-        auc_roc = float("nan")
-    try:
-        auc_pr = float(average_precision_score(bl_all, probs))
-    except Exception:
-        auc_pr = float("nan")
+    det_metrics_50 = _run_det_eval(logits_50, bl_50, tl_50)
+    det_metrics_9  = _run_det_eval(logits_9,  bl_9,  tl_9)
 
-    per_type_recall: dict[str, float] = {}
-    unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
-    for type_name, orig_idx in TYPE_IDX.items():
-        type_mask = (tl_all == orig_idx)
-        if type_mask.sum() > 0:
-            per_type_recall[type_name] = float(pred_optimal[type_mask].mean())
-
-    det_metrics = {
-        **metrics_optimal,
-        "threshold":       threshold,
-        "val_f1":          val_f1,
-        "auc_roc":         auc_roc,
-        "auc_pr":          auc_pr,
-        "default_thr":     metrics_default,
-        "per_type_recall": per_type_recall,
-    }
+    # per_type_recall 차트에는 50:50 view 사용
+    per_type_recall = det_metrics_50["per_type_recall"]
 
     if verbose:
-        print(f"[eval/{fold_name}] Detection  threshold={threshold:.4f}  (val_f1={val_f1:.4f})")
-        print(
-            f"  default(0.50):           acc={metrics_default['accuracy']:.3f}  "
-            f"prec={metrics_default['precision']:.3f}  "
-            f"rec={metrics_default['recall']:.3f}  "
-            f"F1={metrics_default['f1']:.3f}"
-        )
-        print(
-            f"  optimal({threshold:.4f}): acc={metrics_optimal['accuracy']:.3f}  "
-            f"prec={metrics_optimal['precision']:.3f}  "
-            f"rec={metrics_optimal['recall']:.3f}  "
-            f"F1={metrics_optimal['f1']:.3f}"
-        )
-        print(f"  AUC-ROC={auc_roc:.4f}  AUC-PR={auc_pr:.4f}")
-        print("  per-type recall (optimal threshold):")
+        for label, dm in [("test_50_50 (native)", det_metrics_50),
+                           ("test_9_1  (field)",  det_metrics_9)]:
+            print(f"[eval/{fold_name}] Detection [{label}]  threshold={threshold:.4f}  (val_f1={val_f1:.4f})")
+            print(
+                f"  default(0.50):           acc={dm['default_thr']['accuracy']:.3f}  "
+                f"prec={dm['default_thr']['precision']:.3f}  "
+                f"rec={dm['default_thr']['recall']:.3f}  "
+                f"F1={dm['default_thr']['f1']:.3f}"
+            )
+            print(
+                f"  optimal({threshold:.4f}): acc={dm['accuracy']:.3f}  "
+                f"prec={dm['precision']:.3f}  "
+                f"rec={dm['recall']:.3f}  "
+                f"F1={dm['f1']:.3f}"
+            )
+            print(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
+        print("  per-type recall (test_50_50, optimal threshold):")
         for tn, r in sorted(per_type_recall.items()):
             mark = "  ◀ UNSEEN" if tn == unseen_type else ""
             print(f"    {tn:20s} recall={r:.3f}{mark}")
 
-    # ── Classification 평가 ───────────────────────────────────────────────
-    # known types: class_names에 있는 type만 평가
+    # ── Classification 평가 (test_50_50 사용) ────────────────────────────
     known_type_names = set(class_names.values())
-    known_orig_idxs = {TYPE_IDX[n] for n in known_type_names if n in TYPE_IDX}
+    known_orig_idxs  = {TYPE_IDX[n] for n in known_type_names if n in TYPE_IDX}
 
-    # test 샘플 중 Attack이고 known type인 것만
     cls_mask = np.array([
-        bl_all[i] == 1 and tl_all[i] in known_orig_idxs
-        for i in range(len(bl_all))
+        bl_50[i] == 1 and tl_50[i] in known_orig_idxs
+        for i in range(len(bl_50))
     ])
 
     if cls_mask.sum() == 0:
@@ -355,14 +366,12 @@ def evaluate_fold(
             "confusion_matrix": [],
         }
     else:
-        # class_names의 type_name → class_idx 역변환으로 target 계산
-        tl_cls = tl_all[cls_mask]
-        # orig_type_idx → class_idx
+        tl_cls      = tl_50[cls_mask]
         orig_to_cls = {TYPE_IDX[name]: int(k) for k, name in class_names.items()}
         cls_targets = np.array([orig_to_cls[t] for t in tl_cls], dtype=np.int32)
 
         cls_logits_all, cls_bl, cls_tl = _infer_filtered(
-            eval_encoder, cls_head, ds_test, cls_mask, det_cfg["batch_size"], device
+            eval_encoder, cls_head, ds_test_50, cls_mask, det_cfg["batch_size"], device
         )
         cls_preds = cls_logits_all.argmax(axis=1)
 
@@ -402,18 +411,26 @@ def evaluate_fold(
                     f"prec={cm_val['precision']:.3f}  rec={cm_val['recall']:.3f}"
                 )
 
-    results = {"detection": det_metrics, "classification": cls_metrics}
+    results = {
+        "detection_50_50": det_metrics_50,   # 50:50 balanced (native)
+        "detection_9_1":   det_metrics_9,    # 9:1 subsampled (field-representative)
+        "classification":  cls_metrics,
+    }
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
     out_root = Path(cfg.get("output_dir", "outputs/scores"))
-    for task, metrics in [("detector", det_metrics), ("classifier", cls_metrics)]:
+    for task, metrics in [
+        ("detector_50_50", det_metrics_50),
+        ("detector_9_1",   det_metrics_9),
+        ("classifier",     cls_metrics),
+    ]:
         out_dir = out_root / fold_name / task
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # ── Figure ────────────────────────────────────────────────────────────
+    # ── Figure (50:50 기준 per-type recall) ───────────────────────────────
     fig_dir = Path(cfg.get("figure_dir", "outputs/figures")) / fold_name
     plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
 
