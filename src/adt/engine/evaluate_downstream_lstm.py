@@ -175,20 +175,19 @@ def _calibrate_threshold_lstm(
     probs = torch.sigmoid(torch.from_numpy(logits_np)).numpy()
 
     # ── score 분포 진단 (thr=1.0 원인 파악용) ──────────────────────────
-    import numpy as _np
     _pos = probs[bl_np == 1]
     _neg = probs[bl_np == 0]
     if len(_pos) > 0 and len(_neg) > 0:
-        logger.info(
+        print(
             f"[diag/{fold_name}] positive n={len(_pos)}"
-            f"  min={_pos.min():.4f}  p10={_np.percentile(_pos,10):.4f}"
-            f"  median={_np.median(_pos):.4f}  max={_pos.max():.4f}"
+            f"  min={_pos.min():.4f}  p10={np.percentile(_pos,10):.4f}"
+            f"  median={np.median(_pos):.4f}  max={_pos.max():.4f}"
             f"  >0.99={(_pos>0.99).mean():.3f}  >=0.9999={(_pos>=0.9999).mean():.3f}"
         )
-        logger.info(
+        print(
             f"[diag/{fold_name}] negative n={len(_neg)}"
-            f"  min={_neg.min():.4f}  median={_neg.median() if hasattr(_neg,'median') else _np.median(_neg):.4f}"
-            f"  p90={_np.percentile(_neg,90):.4f}  max={_neg.max():.4f}"
+            f"  min={_neg.min():.4f}  median={np.median(_neg):.4f}"
+            f"  p90={np.percentile(_neg,90):.4f}  max={_neg.max():.4f}"
             f"  <0.01={(_neg<0.01).mean():.3f}"
         )
 
