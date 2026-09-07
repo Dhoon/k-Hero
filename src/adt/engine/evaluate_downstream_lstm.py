@@ -394,10 +394,11 @@ def evaluate_fold_lstm(
             f"F1={dm['f1']:.3f}"
         )
         logger.info(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
-    logger.info("  per-type recall (test_50_50, optimal threshold):")
-    for tn, r in sorted(per_type_recall.items()):
-        mark = "  ◀ UNSEEN" if tn == unseen_type else ""
-        logger.info(f"    {tn:20s} recall={r:.3f}{mark}")
+        if dm is det_metrics_50:
+            logger.info("  per-type recall (optimal threshold):")
+            for tn, r in sorted(per_type_recall.items()):
+                mark = "  ◀ UNSEEN" if tn == unseen_type else ""
+                logger.info(f"    {tn:20s} recall={r:.3f}{mark}")
     writer.add_scalar("eval/auc_roc_50_50", det_metrics_50.get("auc_roc", float("nan")))
     writer.add_scalar("eval/auc_roc_9_1",   det_metrics_9.get("auc_roc", float("nan")))
 
