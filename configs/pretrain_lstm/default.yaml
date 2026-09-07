@@ -1,0 +1,16 @@
+seed: 42
+data_config: configs/data/default.yaml
+
+model:
+  hidden_dim: 64
+  num_layers: 2
+
+train:
+  epochs: 100
+  batch_size: 256
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_steps: 200
+  grad_clip: 1.0
+  log_dir: logs/pretrain_lstm
+  ckpt_dir: checkpoints/pretrain_lstm
