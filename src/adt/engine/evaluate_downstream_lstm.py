@@ -29,7 +29,7 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader
 
 from src.adt.data.labeling import TYPE_IDX
-from src.adt.engine.evaluate_downstream_transformer import find_best_threshold, plot_per_type_recall
+from src.adt.engine.evaluate_downstream_transformer import find_best_threshold, plot_per_type_recall, _TYPE_ORDER
 from src.adt.engine.train_downstream_transformer import (
     ALL_FOLDS,
     FOLD_UNSEEN_TYPE,
@@ -161,11 +161,16 @@ def _calibrate_threshold_lstm(
     det_head: nn.Module,
     device: torch.device,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> tuple[float, float]:
-    """val_9_1 기준 F1-max threshold 탐색 → threshold.json 저장."""
+    """F1-max threshold 탐색 → threshold.json 저장.
+
+    Args:
+        calib: 캘리브레이션 기준 분포 — "9_1" (실전) 또는 "50_50" (균형)
+    """
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg = cfg["detection"]
-    val_dir = downstream_dir / fold_name / "val_9_1"
+    val_dir = downstream_dir / fold_name / f"val_{calib}"
     ds_val  = DownstreamFoldDataset(val_dir)
     loader  = DataLoader(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
@@ -201,7 +206,7 @@ def _calibrate_threshold_lstm(
     )
     if verbose:
         print(
-            f"[lstm threshold/{fold_name}] val_9_1  "
+            f"[lstm threshold/{fold_name}] val_{calib}  "
             f"threshold={threshold:.4f}  val_f1={val_f1:.4f}"
         )
     return threshold, val_f1
@@ -214,8 +219,13 @@ def evaluate_fold_lstm(
     cfg: dict[str, Any],
     device: torch.device,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> dict[str, Any]:
-    """단일 fold 평가.  test_50_50 + test_9_1 두 view + 분류 + latency."""
+    """단일 fold 평가.  test_50_50 + test_9_1 두 view + 분류 + latency.
+
+    Args:
+        calib: threshold 캘리브레이션 기준 분포 — "9_1" 또는 "50_50"
+    """
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg   = cfg["detection"]
     cls_cfg   = cfg["classification"]
@@ -299,9 +309,9 @@ def evaluate_fold_lstm(
         lat_str += f"  gpu={latency['gpu_ms']:.3f}ms"
     logger.info(f"latency (batch=1, 100iter): {lat_str}")
 
-    # ── threshold (val_9_1) ───────────────────────────────────────────────
+    # ── threshold 캘리브레이션 ────────────────────────────────────────────
     threshold, val_f1 = _calibrate_threshold_lstm(
-        fold_name, cfg, encoder, det_head, device, verbose=verbose
+        fold_name, cfg, encoder, det_head, device, verbose=verbose, calib=calib
     )
 
     # ── recall-target 테이블 (val_50_50 기준) ─────────────────────────────
@@ -396,9 +406,9 @@ def evaluate_fold_lstm(
         logger.info(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
         if dm is det_metrics_50:
             logger.info("  per-type recall (optimal threshold):")
-            for tn, r in sorted(per_type_recall.items()):
+            for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
                 mark = "  ◀ UNSEEN" if tn == unseen_type else ""
-                logger.info(f"    {tn:20s} recall={r:.3f}{mark}")
+                logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
     writer.add_scalar("eval/auc_roc_50_50", det_metrics_50.get("auc_roc", float("nan")))
     writer.add_scalar("eval/auc_roc_9_1",   det_metrics_9.get("auc_roc", float("nan")))
 
@@ -433,8 +443,14 @@ def evaluate_fold_lstm(
             cls_targets, cls_preds, average=None,
             labels=list(range(num_classes)), zero_division=0,
         )
+        macro_prec = float(precision_score(cls_targets, cls_preds, average="macro", zero_division=0))
+        macro_rec  = float(recall_score(cls_targets, cls_preds, average="macro", zero_division=0))
+        macro_f1   = float(f1_score(cls_targets, cls_preds, average="macro", zero_division=0))
         cls_metrics = {
-            "accuracy": float(accuracy_score(cls_targets, cls_preds)),
+            "accuracy":    float(accuracy_score(cls_targets, cls_preds)),
+            "macro_prec":  macro_prec,
+            "macro_rec":   macro_rec,
+            "macro_f1":    macro_f1,
             "per_class": {
                 cls_idx_to_name.get(i, str(i)): {
                     "precision": float(precs[i]),
@@ -448,6 +464,7 @@ def evaluate_fold_lstm(
         }
         logger.info(
             f"Classification  acc={cls_metrics['accuracy']:.3f}  "
+            f"macro: prec={macro_prec:.3f}  rec={macro_rec:.3f}  F1={macro_f1:.3f}  "
             f"(N={cls_mask.sum()})"
         )
         for cn, cm_val in cls_metrics["per_class"].items():
@@ -488,11 +505,12 @@ def evaluate_all_folds_lstm(
     device: torch.device,
     folds: list[str] | None = None,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> dict[str, dict]:
     targets = folds if folds is not None else ALL_FOLDS
     results: dict[str, dict] = {}
     for fold in targets:
         if verbose:
             print(f"\n{'='*60}\n fold: {fold}\n{'='*60}")
-        results[fold] = evaluate_fold_lstm(fold, cfg, device, verbose=verbose)
+        results[fold] = evaluate_fold_lstm(fold, cfg, device, verbose=verbose, calib=calib)
     return results

@@ -103,10 +103,14 @@ def calibrate_threshold(
     det_head: nn.Module,
     device: torch.device,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> tuple[float, float]:
     """val set으로 최적 detection threshold 탐색 후 threshold.json 저장.
 
     threshold는 val set에서만 결정 — test set 절대 사용 금지 (data leakage).
+
+    Args:
+        calib: 캘리브레이션 기준 분포 — "9_1" (실전) 또는 "50_50" (균형)
 
     Returns:
         (threshold, val_f1)  — sigmoid 확률 기준 threshold
@@ -114,7 +118,7 @@ def calibrate_threshold(
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg = cfg["detection"]
 
-    val_dir = downstream_dir / fold_name / "val_9_1"  # 실전 분포(9:1)로 threshold 보정
+    val_dir = downstream_dir / fold_name / f"val_{calib}"
     ds_val = DownstreamFoldDataset(val_dir)
     val_loader = DataLoader(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
@@ -135,7 +139,7 @@ def calibrate_threshold(
 
     if verbose:
         print(
-            f"[threshold/{fold_name}] val best threshold={threshold:.4f}  "
+            f"[threshold/{fold_name}] val_{calib} threshold={threshold:.4f}  "
             f"val_f1={val_f1:.4f}  → saved: {thr_path}"
         )
     return threshold, val_f1
@@ -185,6 +189,7 @@ def evaluate_fold(
     encoder: nn.Module,
     device: torch.device,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> dict[str, Any]:
     """단일 fold의 detection + classification 평가.
 
@@ -275,7 +280,7 @@ def evaluate_fold(
     # ── Detection 평가 ────────────────────────────────────────────────────
     # threshold는 val_9_1(실전 분포)에서 F1-max sweep (calibrate_threshold 내부)
     threshold, val_f1 = calibrate_threshold(
-        fold_name, cfg, eval_encoder, det_head, device, verbose=verbose
+        fold_name, cfg, eval_encoder, det_head, device, verbose=verbose, calib=calib
     )
 
     unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
@@ -347,10 +352,11 @@ def evaluate_fold(
             f"F1={dm['f1']:.3f}"
         )
         logger.info(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
-    logger.info("  per-type recall (test_50_50, optimal threshold):")
-    for tn, r in sorted(per_type_recall.items()):
-        mark = "  ◀ UNSEEN" if tn == unseen_type else ""
-        logger.info(f"    {tn:20s} recall={r:.3f}{mark}")
+        if dm is det_metrics_50:
+            logger.info("  per-type recall (optimal threshold):")
+            for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
+                mark = "  ◀ UNSEEN" if tn == unseen_type else ""
+                logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
     writer.add_scalar("eval/auc_roc_50_50", det_metrics_50.get("auc_roc", float("nan")))
     writer.add_scalar("eval/auc_roc_9_1",   det_metrics_9.get("auc_roc", float("nan")))
 
@@ -396,6 +402,12 @@ def evaluate_fold(
             cls_targets, cls_preds, average=None, labels=list(range(num_classes)),
             zero_division=0,
         )
+        macro_prec = float(precision_score(cls_targets, cls_preds, average="macro", zero_division=0))
+        macro_rec  = float(recall_score(cls_targets, cls_preds, average="macro", zero_division=0))
+        macro_f1   = float(f1_score(cls_targets, cls_preds, average="macro", zero_division=0))
+        cls_metrics["macro_prec"] = macro_prec
+        cls_metrics["macro_rec"]  = macro_rec
+        cls_metrics["macro_f1"]   = macro_f1
         for cls_i in range(num_classes):
             name = cls_idx_to_name.get(cls_i, str(cls_i))
             cls_metrics["per_class"][name] = {
@@ -404,8 +416,8 @@ def evaluate_fold(
             }
 
         logger.info(
-            f"Classification  "
-            f"acc={cls_metrics['accuracy']:.3f}  "
+            f"Classification  acc={cls_metrics['accuracy']:.3f}  "
+            f"macro: prec={macro_prec:.3f}  rec={macro_rec:.3f}  F1={macro_f1:.3f}  "
             f"(N={cls_mask.sum()})"
         )
         for cn, cm_val in cls_metrics["per_class"].items():
@@ -553,6 +565,7 @@ def evaluate_all_folds(
     device: torch.device,
     folds: list[str] | None = None,
     verbose: bool = True,
+    calib: str = "9_1",
 ) -> dict[str, dict]:
     """지정된 fold 목록을 순차 평가. folds=None이면 ALL_FOLDS 전부."""
     targets = folds if folds is not None else ALL_FOLDS
@@ -560,5 +573,5 @@ def evaluate_all_folds(
     for fold in targets:
         if verbose:
             print(f"\n{'='*60}\n fold: {fold}\n{'='*60}")
-        results[fold] = evaluate_fold(fold, cfg, encoder, device, verbose=verbose)
+        results[fold] = evaluate_fold(fold, cfg, encoder, device, verbose=verbose, calib=calib)
     return results
