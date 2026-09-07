@@ -304,6 +304,28 @@ def evaluate_fold_lstm(
         fold_name, cfg, encoder, det_head, device, verbose=verbose
     )
 
+    # ── recall-target 테이블 (val_50_50 기준) ─────────────────────────────
+    _val50_dir = downstream_dir / fold_name / "val_50_50"
+    if _val50_dir.exists():
+        from sklearn.metrics import precision_recall_curve as _prc
+        _ds_v50  = DownstreamFoldDataset(_val50_dir)
+        _ld_v50  = DataLoader(_ds_v50, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0)
+        _lg_v50, _bl_v50, _ = _infer_lstm(encoder, det_head, _ld_v50, device)
+        _pr_v50  = torch.sigmoid(torch.from_numpy(_lg_v50)).numpy()
+        _precs, _recs, _thrs = _prc(_bl_v50, _pr_v50)
+        _precs, _recs = _precs[:-1], _recs[:-1]
+        logger.info("[recall-target / val_50_50]")
+        for _tgt in [0.70, 0.80, 0.85, 0.90, 0.95]:
+            _idx = np.where(_recs >= _tgt)[0]
+            if len(_idx) == 0:
+                logger.info(f"  recall>={_tgt:.2f}: 도달 불가")
+            else:
+                _best = _idx[np.argmax(_thrs[_idx])]
+                logger.info(
+                    f"  recall>={_tgt:.2f}: thr={_thrs[_best]:.4f}"
+                    f"  precision={_precs[_best]:.4f}  recall={_recs[_best]:.4f}"
+                )
+
     unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
 
     def _run_det_eval(
@@ -427,6 +449,11 @@ def evaluate_fold_lstm(
             f"Classification  acc={cls_metrics['accuracy']:.3f}  "
             f"(N={cls_mask.sum()})"
         )
+        for cn, cm_val in cls_metrics["per_class"].items():
+            logger.info(
+                f"    {cn:20s} "
+                f"prec={cm_val['precision']:.3f}  rec={cm_val['recall']:.3f}"
+            )
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
     out_root = Path(cfg.get("output_dir", "outputs/scores_lstm"))
