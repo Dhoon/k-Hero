@@ -382,35 +382,31 @@ def evaluate_fold_lstm(
     logits_9,  bl_9,  tl_9  = _infer_lstm(encoder, det_head, loader_9,  device)
     det_metrics_50 = _run_det_eval(logits_50, bl_50, tl_50)
     det_metrics_9  = _run_det_eval(logits_9,  bl_9,  tl_9)
-    per_type_recall = det_metrics_50["per_type_recall"]
+    # calib에 맞는 test view만 출력
+    dm_show    = det_metrics_50 if calib == "50_50" else det_metrics_9
+    label_show = "test_50_50 (native)" if calib == "50_50" else "test_9_1  (field)"
+    per_type_recall = dm_show["per_type_recall"]
 
-    for label, dm in [
-        ("test_50_50 (native)", det_metrics_50),
-        ("test_9_1  (field)",   det_metrics_9),
-    ]:
-        logger.info(
-            f"Detection [{label}]  thr={threshold:.4f}  val_f1={val_f1:.4f}"
-        )
-        logger.info(
-            f"  default(0.50): acc={dm['default_thr']['accuracy']:.3f}  "
-            f"prec={dm['default_thr']['precision']:.3f}  "
-            f"rec={dm['default_thr']['recall']:.3f}  "
-            f"F1={dm['default_thr']['f1']:.3f}"
-        )
-        logger.info(
-            f"  optimal:       acc={dm['accuracy']:.3f}  "
-            f"prec={dm['precision']:.3f}  "
-            f"rec={dm['recall']:.3f}  "
-            f"F1={dm['f1']:.3f}"
-        )
-        logger.info(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
-        if dm is det_metrics_50:
-            logger.info("  per-type recall (optimal threshold):")
-            for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
-                mark = "  ◀ UNSEEN" if tn == unseen_type else ""
-                logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
-    writer.add_scalar("eval/auc_roc_50_50", det_metrics_50.get("auc_roc", float("nan")))
-    writer.add_scalar("eval/auc_roc_9_1",   det_metrics_9.get("auc_roc", float("nan")))
+    logger.info(f"Detection [{label_show}]  thr={threshold:.4f}  val_f1={val_f1:.4f}")
+    logger.info(
+        f"  default(0.50): acc={dm_show['default_thr']['accuracy']:.3f}  "
+        f"prec={dm_show['default_thr']['precision']:.3f}  "
+        f"rec={dm_show['default_thr']['recall']:.3f}  "
+        f"F1={dm_show['default_thr']['f1']:.3f}"
+    )
+    logger.info(
+        f"  optimal:       acc={dm_show['accuracy']:.3f}  "
+        f"prec={dm_show['precision']:.3f}  "
+        f"rec={dm_show['recall']:.3f}  "
+        f"F1={dm_show['f1']:.3f}"
+    )
+    logger.info(f"  AUC-ROC={dm_show['auc_roc']:.4f}  AUC-PR={dm_show['auc_pr']:.4f}")
+    logger.info("  per-type recall (optimal threshold):")
+    for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
+        mark = "  ◀ UNSEEN" if tn == unseen_type else ""
+        logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
+    auc_key = "eval/auc_roc_50_50" if calib == "50_50" else "eval/auc_roc_9_1"
+    writer.add_scalar(auc_key, dm_show.get("auc_roc", float("nan")))
 
     # ── Classification (test_50_50, known attack types) ───────────────────
     known_type_names = set(class_names.values())
