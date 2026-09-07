@@ -1,4 +1,4 @@
-"""Pretrain checkpoint 품질 진단 스크립트 (실제 masking 조건 반영).
+﻿"""Pretrain checkpoint 품질 진단 스크립트 (실제 masking 조건 반영).
 
 진단 항목:
   DIAG 1 -- pretrain/val에서 Normal 200개, 실제 masking 적용
@@ -8,12 +8,12 @@
             동일 masking 조건 → masked MSE → AUC-ROC
   DIAG 3 -- pretrain/val 300+개, forecast error vs last-step trivial baseline
 
-masking 설정은 configs/pretrain/default.yaml ssl 섹션을 그대로 사용.
+masking 설정은 configs/pretrain_transformer/default.yaml ssl 섹션을 그대로 사용.
 epoch=99 (curriculum 완료 이후 고정 구간, mask_ratio_end 적용).
 
 사용법::
     python scripts/diagnose_pretrain.py
-    python scripts/diagnose_pretrain.py --pretrain_config configs/pretrain/default.yaml
+    python scripts/diagnose_pretrain.py --pretrain_config configs/pretrain_transformer/default.yaml
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import yaml
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.reconstruction_head import ReconstructionAnomalyHead
 from src.adt.models.heads.forecasting_head import ForecastingHead
 from src.adt.ssl.masking import generate_mask
@@ -478,8 +478,8 @@ def diag_forecast_error(
 # ---------------------------------------------------------------------------
 
 def main(
-    pretrain_config: str = "configs/pretrain/default.yaml",
-    downstream_config: str = "configs/downstream/default.yaml",
+    pretrain_config: str = "configs/pretrain_transformer/default.yaml",
+    downstream_config: str = "configs/downstream_transformer/default.yaml",
 ) -> None:
     pt_cfg   = yaml.safe_load(open(pretrain_config,   encoding="utf-8"))
     ds_cfg   = yaml.safe_load(open(downstream_config, encoding="utf-8"))
@@ -492,7 +492,7 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[setup] device={device}")
 
-    ckpt_path = Path(ds_cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt"))
+    ckpt_path = Path(ds_cfg.get("pretrain_ckpt", "checkpoints/pretrain_transformer/best.pt"))
     if not ckpt_path.exists():
         raise FileNotFoundError(f"checkpoint not found: {ckpt_path}")
 
@@ -522,7 +522,7 @@ def main(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--pretrain_config",  default="configs/pretrain/default.yaml")
-    p.add_argument("--downstream_config", default="configs/downstream/default.yaml")
+    p.add_argument("--pretrain_config",  default="configs/pretrain_transformer/default.yaml")
+    p.add_argument("--downstream_config", default="configs/downstream_transformer/default.yaml")
     args = p.parse_args()
     main(args.pretrain_config, args.downstream_config)

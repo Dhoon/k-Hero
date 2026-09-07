@@ -1,4 +1,4 @@
-"""LR 스케줄러 실효값 검증.
+﻿"""LR 스케줄러 실효값 검증.
 
 optimizer.param_groups[0]['lr']을 직접 읽어 시뮬레이션.
 (get_last_lr()은 base_lr이 이미 곱해진 값을 반환하므로, 진단 스크립트에서
@@ -16,10 +16,10 @@ import numpy as np
 import torch
 import yaml
 
-from src.adt.engine.train_downstream import _cosine_lr
+from src.adt.engine.train_downstream_transformer import _cosine_lr
 
 
-def main(config: str = "configs/downstream/default.yaml") -> None:
+def main(config: str = "configs/downstream_transformer/default.yaml") -> None:
     cfg = yaml.safe_load(open(config, encoding="utf-8"))
     det_cfg = cfg["detection"]
 
@@ -83,5 +83,5 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="configs/downstream/default.yaml")
+    p.add_argument("--config", default="configs/downstream_transformer/default.yaml")
     main(p.parse_args().config)

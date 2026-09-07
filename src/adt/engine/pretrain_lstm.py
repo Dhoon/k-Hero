@@ -82,7 +82,7 @@ def run(cfg: dict[str, Any], max_epochs: int | None = None) -> None:
 
     set_seed(cfg.get("seed", 42))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger, writer = get_logger(train_cfg["log_dir"])
+    logger, writer = get_logger(train_cfg["log_dir"], name="adt.pretrain_lstm")
     logger.info(f"device={device}  epochs={epochs}  n_features={n_features}")
 
     ae = LSTMAutoencoder(

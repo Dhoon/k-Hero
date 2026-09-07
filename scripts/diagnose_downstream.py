@@ -1,4 +1,4 @@
-"""downstream 학습 부진 원인 진단 스크립트.
+﻿"""downstream 학습 부진 원인 진단 스크립트.
 
 진단 항목:
   1. encoder checkpoint 존재 여부 / 파일 크기 / 실제 로드 확인
@@ -8,7 +8,7 @@
 
 사용법::
     PYTHONPATH=. python scripts/diagnose_downstream.py \
-        [--config configs/downstream/default.yaml]
+        [--config configs/downstream_transformer/default.yaml]
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ import torch
 import torch.nn as nn
 import yaml
 
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.detection_head import DetectionHead
 from src.adt.utils.checkpoint import load_encoder_frozen
-from src.adt.engine.train_downstream import (
+from src.adt.engine.train_downstream_transformer import (
     DownstreamFoldDataset, compute_class_info, compute_pos_weight,
     run_step, _cosine_lr,
 )
@@ -45,7 +45,7 @@ def diag_checkpoint(cfg: dict) -> nn.Module | None:
     print("DIAG 1: encoder checkpoint")
     print("=" * 60)
 
-    ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt"))
+    ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain_transformer/best.pt"))
     print(f"  설정 경로 : {ckpt_path.resolve()}")
 
     if not ckpt_path.exists():
@@ -462,7 +462,7 @@ def diag_scheduler(cfg: dict) -> None:
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main(config: str = "configs/downstream/default.yaml") -> None:
+def main(config: str = "configs/downstream_transformer/default.yaml") -> None:
     cfg = _load_cfg(config)
 
     encoder = diag_checkpoint(cfg)
@@ -481,7 +481,7 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
                 d_ff=model_cfg["d_ff"],
                 dropout=0.0,
             )
-            ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt"))
+            ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain_transformer/best.pt"))
             try:
                 encoder = load_encoder_frozen(ckpt_path, enc_check)
             except Exception:
@@ -500,6 +500,6 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/downstream/default.yaml")
+    parser.add_argument("--config", default="configs/downstream_transformer/default.yaml")
     args = parser.parse_args()
     main(args.config)

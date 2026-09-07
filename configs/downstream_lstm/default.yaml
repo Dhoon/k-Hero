@@ -18,6 +18,7 @@ detection:
   batch_size: 256
   warmup_steps: 0
   ckpt_dir: checkpoints/downstream_lstm
+  log_dir: logs/downstream_lstm
 
 classification:
   hidden_dim: 32
@@ -28,3 +29,4 @@ classification:
   batch_size: 256
   warmup_steps: 0
   ckpt_dir: checkpoints/downstream_lstm
+  log_dir: logs/downstream_lstm

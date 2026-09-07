@@ -1,4 +1,4 @@
-"""Encoder / TemporalEncoding / Masking / Loss / ForecastingHead 스모크 테스트.
+﻿"""Encoder / TemporalEncoding / Masking / Loss / ForecastingHead 스모크 테스트.
 
 실행:
     pytest tests/test_models.py -v
@@ -6,7 +6,7 @@
 import pytest
 import torch
 
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.positional_encoding import TemporalEncoding
 from src.adt.models.heads.reconstruction_head import MaskedReconstructionHead
 from src.adt.models.heads.forecasting_head import ForecastingHead

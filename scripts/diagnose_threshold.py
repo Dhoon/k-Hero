@@ -1,4 +1,4 @@
-"""Detection head threshold 진단 스크립트.
+﻿"""Detection head threshold 진단 스크립트.
 
 진단 항목:
   1. val set sigmoid 확률 분포 (Normal / Attack 그룹별 mean/median/percentile)
@@ -11,7 +11,7 @@ val set : 각 fold 고유 val
 
 사용법::
     python scripts/diagnose_threshold.py
-    python scripts/diagnose_threshold.py --config configs/downstream/default.yaml
+    python scripts/diagnose_threshold.py --config configs/downstream_transformer/default.yaml
 """
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.detection_head import DetectionHead
 from src.adt.utils.checkpoint import load_encoder_frozen
-from src.adt.engine.train_downstream import (
+from src.adt.engine.train_downstream_transformer import (
     ALL_FOLDS, DownstreamFoldDataset,
 )
 
@@ -244,7 +244,7 @@ def print_summary(summary: dict[str, dict]) -> None:
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main(config: str = "configs/downstream/default.yaml") -> None:
+def main(config: str = "configs/downstream_transformer/default.yaml") -> None:
     cfg    = yaml.safe_load(open(config, encoding="utf-8"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device={device}  config={config}")
@@ -261,7 +261,7 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
         d_ff      =model_cfg["d_ff"],
         dropout   =0.0,
     )
-    ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain/best.pt"))
+    ckpt_path = Path(cfg.get("pretrain_ckpt", "checkpoints/pretrain_transformer/best.pt"))
     encoder   = load_encoder_frozen(ckpt_path, encoder).to(device)
     print(f"encoder loaded from {ckpt_path}\n")
 
@@ -278,6 +278,6 @@ def main(config: str = "configs/downstream/default.yaml") -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/downstream/default.yaml")
+    parser.add_argument("--config", default="configs/downstream_transformer/default.yaml")
     args = parser.parse_args()
     main(args.config)

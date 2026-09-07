@@ -1,4 +1,4 @@
-"""LSTM Downstream Detection + Classification 학습 루프.
+﻿"""LSTM Downstream Detection + Classification 학습 루프.
 
 설계 원칙:
   Phase 1 — Detection : encoder 완전 unfreeze + det_head 공동 학습.
@@ -21,7 +21,7 @@ import yaml
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 
-from src.adt.engine.train_downstream import (
+from src.adt.engine.train_downstream_transformer import (
     ALL_FOLDS,
     FOLD_UNSEEN_TYPE,
     IDX_TO_TYPE,
@@ -36,6 +36,7 @@ from src.adt.models.lstm_ae import (
     LSTMEncoder,
 )
 from src.adt.utils.checkpoint import save_checkpoint
+from src.adt.utils.logger import get_logger
 from src.adt.utils.seed import set_seed
 
 
@@ -122,6 +123,9 @@ def train_fold_lstm(
     seed      = cfg.get("seed", 42)
     set_seed(seed)
 
+    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_lstm")) / fold_name
+    logger, writer = get_logger(log_dir, name=f"adt.downstream_lstm.{fold_name}")
+
     data_cfg_path = Path(cfg.get("data_config", "configs/data/default.yaml"))
     with open(data_cfg_path, encoding="utf-8") as f:
         data_cfg = yaml.safe_load(f)
@@ -138,12 +142,11 @@ def train_fold_lstm(
     num_classes = len(class_names)
     pw_float    = compute_pos_weight(ds_train.binary_label.numpy())
 
-    if verbose:
-        print(
-            f"[lstm train] fold={fold_name}  num_classes={num_classes}  "
-            f"train={len(ds_train):,}  val={len(ds_val):,}  "
-            f"pos_weight={pw_float:.2f}"
-        )
+    logger.info(
+        f"fold={fold_name}  num_classes={num_classes}  "
+        f"train={len(ds_train):,}  val={len(ds_val):,}  "
+        f"pos_weight={pw_float:.2f}"
+    )
 
     train_loader = DataLoader(
         ds_train, batch_size=det_cfg["batch_size"], shuffle=True,
@@ -176,10 +179,9 @@ def train_fold_lstm(
     if pretrain_ckpt and Path(pretrain_ckpt).exists():
         state = torch.load(pretrain_ckpt, map_location="cpu")
         encoder.load_state_dict(state["encoder"])
-        if verbose:
-            print(f"[lstm train] encoder loaded from {pretrain_ckpt}")
-    elif verbose:
-        print("[lstm train] WARNING: pretrain_ckpt not found — random init")
+        logger.info(f"encoder loaded from {pretrain_ckpt}")
+    else:
+        logger.warning("pretrain_ckpt not found — random init")
 
     for p in encoder.parameters():
         p.requires_grad_(True)
@@ -232,16 +234,17 @@ def train_fold_lstm(
             is_best=is_best,
         )
 
-        if verbose:
-            auc_str = f"{val_auc:.4f}" if not math.isnan(val_auc) else " nan "
-            print(
-                f"  [det] ep{epoch+1:3d}  "
-                f"val_loss={val_loss:.4f}  auc={auc_str}"
-                + ("  [★]" if is_best else "")
-            )
+        auc_str = f"{val_auc:.4f}" if not math.isnan(val_auc) else " nan "
+        logger.info(
+            f"  [det] ep{epoch+1:3d}  "
+            f"val_loss={val_loss:.4f}  auc={auc_str}"
+            + ("  [★]" if is_best else "")
+        )
+        writer.add_scalar("det/val_loss", val_loss, epoch + 1)
+        if not math.isnan(val_auc):
+            writer.add_scalar("det/val_auc", val_auc, epoch + 1)
 
-    if verbose:
-        print(f"[det] done  best_auc={best_det_auc:.4f}")
+    logger.info(f"[det] done  best_auc={best_det_auc:.4f}")
 
     # ── Phase 2: Classification (Phase 1 best encoder freeze) ─────────────
     best_enc_path = det_ckpt_dir / "encoder_finetuned.pt"
@@ -304,14 +307,15 @@ def train_fold_lstm(
             is_best=is_best,
         )
 
-        if verbose:
-            print(
-                f"  [cls] ep{epoch+1:3d}  val={val_cls:.4f}"
-                + ("  [★]" if is_best else "")
-            )
+        logger.info(
+            f"  [cls] ep{epoch+1:3d}  val={val_cls:.4f}"
+            + ("  [★]" if is_best else "")
+        )
+        if not math.isnan(val_cls):
+            writer.add_scalar("cls/val_loss", val_cls, epoch + 1)
 
-    if verbose:
-        print(f"[cls] done  best_val={best_cls_val:.4f}")
+    logger.info(f"[cls] done  best_val={best_cls_val:.4f}")
+    writer.close()
 
 
 def train_all_folds_lstm(

@@ -1,4 +1,4 @@
-"""test_downstream.py — Downstream 학습/평가 파이프라인 테스트.
+﻿"""test_downstream.py — Downstream 학습/평가 파이프라인 테스트.
 
 더미 encoder checkpoint로 실제 학습/평가 없이 구조 정합성만 확인.
 """
@@ -13,12 +13,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.detection_head import DetectionHead
 from src.adt.models.heads.classification_head import ClassificationHead
 from src.adt.utils.checkpoint import load_encoder_frozen
 from src.adt.data.labeling import TYPE_IDX, LABEL_NORMAL
-from src.adt.engine.train_downstream import (
+from src.adt.engine.train_downstream_transformer import (
     ALL_FOLDS,
     FOLD_UNSEEN_TYPE,
     DownstreamFoldDataset,
@@ -28,7 +28,7 @@ from src.adt.engine.train_downstream import (
     train_fold,
     train_all_folds,
 )
-from src.adt.engine.evaluate_downstream import (
+from src.adt.engine.evaluate_downstream_transformer import (
     evaluate_fold,
     evaluate_all_folds,
     _infer_filtered,
@@ -441,7 +441,7 @@ class TestFoldIteration:
             return original_fn(fold_name, cfg, enc, dev, verbose=False)
 
         with patch(
-            "src.adt.engine.train_downstream.train_fold",
+            "src.adt.engine.train_downstream_transformer.train_fold",
             side_effect=tracking_fn,
         ):
             train_all_folds(small_cfg, encoder, torch.device("cpu"), verbose=False)
@@ -459,7 +459,7 @@ class TestFoldIteration:
             return original_fn(fold_name, cfg, enc, dev, verbose=False)
 
         with patch(
-            "src.adt.engine.train_downstream.train_fold",
+            "src.adt.engine.train_downstream_transformer.train_fold",
             side_effect=tracking_fn,
         ):
             train_all_folds(
@@ -513,7 +513,7 @@ class TestEvaluateFiltering:
             return result
 
         with patch(
-            "src.adt.engine.evaluate_downstream._infer_filtered",
+            "src.adt.engine.evaluate_downstream_transformer._infer_filtered",
             side_effect=capturing_fn,
         ):
             evaluate_fold(
@@ -570,7 +570,7 @@ class TestEncoderFinetune:
     def test_gradient_flows_through_ln_only(self, enc_and_ckpt):
         """finetune=True 학습 스텝 후 LN weight.grad가 채워짐, 나머지는 None."""
         from src.adt.utils.checkpoint import load_encoder_for_finetune
-        from src.adt.engine.train_downstream import _train_det_epoch
+        from src.adt.engine.train_downstream_transformer import _train_det_epoch
         from torch.utils.data import TensorDataset
 
         enc, ckpt_path = enc_and_ckpt
@@ -617,7 +617,7 @@ class TestEncoderFinetune:
 
     def test_cls_phase_encoder_fully_frozen(self, enc_and_ckpt, tmp_path, small_cfg):
         """finetune 활성화 train_fold 후 cls phase에서 encoder가 완전히 frozen."""
-        from src.adt.engine.train_downstream import _train_cls_epoch
+        from src.adt.engine.train_downstream_transformer import _train_cls_epoch
         from torch.utils.data import TensorDataset
 
         enc, ckpt_path = enc_and_ckpt

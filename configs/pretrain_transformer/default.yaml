@@ -1,0 +1,25 @@
+# Self-supervised pretraining 설정 (Transformer 백본)
+data_config: configs/data/default.yaml
+
+model:
+  d_model: 128
+  n_heads: 4
+  n_layers: 4
+  d_ff: 256
+  dropout: 0.1
+
+ssl:
+  strategy: "masked_reconstruction"
+  mask_mode: "mixed"
+  segment_prob: 0.7
+  mask_ratio: 0.15
+  forecast_loss_weight: 0.15
+
+train:
+  epochs: 100
+  batch_size: 128
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  warmup_steps: 500
+  ckpt_dir: checkpoints/pretrain_transformer
+  log_dir: logs/pretrain_transformer

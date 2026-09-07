@@ -1,11 +1,11 @@
-"""pretrain best.pt val loss 재현 검증.
+﻿"""pretrain best.pt val loss 재현 검증.
 
 기존 _val_epoch() 함수를 그대로 임포트해서 호출.
 학습 로그와 수치가 일치하는지 확인한다.
 
 사용법::
     python scripts/verify_pretrain_val.py
-    python scripts/verify_pretrain_val.py --config configs/pretrain/default.yaml
+    python scripts/verify_pretrain_val.py --config configs/pretrain_transformer/default.yaml
 """
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ import torch
 import yaml
 
 # 기존 함수 그대로 재사용 ─ 새 코드 없음
-from src.adt.engine.pretrain import _val_epoch
+from src.adt.engine.pretrain_transformer import _val_epoch
 from src.adt.data.dataset import build_dataloader
-from src.adt.models.encoder import TimeSeriesTransformerEncoder
+from src.adt.models.transformer_encoder import TimeSeriesTransformerEncoder
 from src.adt.models.heads.reconstruction_head import MaskedReconstructionHead
 from src.adt.models.heads.forecasting_head import ForecastingHead
 
 
-def main(config: str = "configs/pretrain/default.yaml") -> None:
+def main(config: str = "configs/pretrain_transformer/default.yaml") -> None:
     cfg       = yaml.safe_load(open(config, encoding="utf-8"))
     train_cfg = cfg["train"]
     model_cfg = cfg["model"]
@@ -151,6 +151,6 @@ def main(config: str = "configs/pretrain/default.yaml") -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="configs/pretrain/default.yaml")
+    p.add_argument("--config", default="configs/pretrain_transformer/default.yaml")
     args = p.parse_args()
     main(args.config)

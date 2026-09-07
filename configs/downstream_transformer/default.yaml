@@ -1,0 +1,57 @@
+# Downstream Detection + Classification 통합 학습/평가 설정 (Transformer 백본)
+# encoder 구조는 configs/pretrain_transformer/default.yaml과 동일하게 유지
+
+data_config: configs/data/default.yaml
+
+# pretrain checkpoint (encoder만 로드)
+pretrain_ckpt: checkpoints/pretrain_transformer/best.pt
+
+downstream_dir: data/processed/downstream
+
+seed: 42
+
+model:
+  d_model: 128
+  n_heads: 4
+  n_layers: 4
+  d_ff: 256
+  dropout: 0.1
+
+detection:
+  hidden_dim: 64
+  dropout: 0.1
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 100
+  ckpt_dir: checkpoints/downstream_transformer
+  log_dir:  logs/downstream_transformer
+
+classification:
+  hidden_dim: 64
+  dropout: 0.1
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 100
+  ckpt_dir: checkpoints/downstream_transformer
+  log_dir:  logs/downstream_transformer
+
+finetune:
+  enabled: true
+  mode: last_block
+  num_unfrozen_blocks: 1
+  encoder_lr: 1.0e-5
+
+output_dir: outputs/scores_transformer
+figure_dir: outputs/figures_transformer
+
+folds:
+  - all_type
+  - unseen_scale_down
+  - unseen_ramp
+  - unseen_pulse_plateau
+  - unseen_replay
+  - unseen_instant_spike

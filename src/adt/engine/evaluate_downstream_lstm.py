@@ -1,4 +1,4 @@
-"""LSTM Downstream Detection + Classification 평가 루프.
+﻿"""LSTM Downstream Detection + Classification 평가 루프.
 
 평가 원칙:
   - threshold 탐색: val_9_1 (실전 분포) → F1-max sweep
@@ -29,8 +29,8 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader
 
 from src.adt.data.labeling import TYPE_IDX
-from src.adt.engine.evaluate_downstream import find_best_threshold, plot_per_type_recall
-from src.adt.engine.train_downstream import (
+from src.adt.engine.evaluate_downstream_transformer import find_best_threshold, plot_per_type_recall
+from src.adt.engine.train_downstream_transformer import (
     ALL_FOLDS,
     FOLD_UNSEEN_TYPE,
     IDX_TO_TYPE,
@@ -43,6 +43,7 @@ from src.adt.models.lstm_ae import (
     LSTMDetectionHead,
     LSTMEncoder,
 )
+from src.adt.utils.logger import get_logger
 
 
 # ── 추론 헬퍼 ────────────────────────────────────────────────────────────────
@@ -203,6 +204,9 @@ def evaluate_fold_lstm(
     cls_cfg   = cfg["classification"]
     model_cfg = cfg["model"]
 
+    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_lstm")) / fold_name
+    logger, writer = get_logger(log_dir, name=f"adt.eval_lstm.{fold_name}", log_file="eval.log")
+
     data_cfg_path = Path(cfg.get("data_config", "configs/data/default.yaml"))
     with open(data_cfg_path, encoding="utf-8") as f:
         data_cfg = yaml.safe_load(f)
@@ -248,8 +252,7 @@ def evaluate_fold_lstm(
     enc_path = det_ckpt_dir / "encoder_finetuned.pt"
     if enc_path.exists():
         encoder.load_state_dict(torch.load(enc_path, map_location="cpu")["encoder"])
-        if verbose:
-            print(f"[lstm eval/{fold_name}] finetuned encoder: {enc_path}")
+        logger.info(f"finetuned encoder: {enc_path}")
 
     det_best = det_ckpt_dir / "best.pt"
     if det_best.exists():
@@ -271,15 +274,13 @@ def evaluate_fold_lstm(
     n_total = n_enc + n_det
     latency = _measure_latency(encoder, det_head, T, n_features, device)
 
-    if verbose:
-        print(
-            f"[lstm eval/{fold_name}] params: enc={n_enc:,}  "
-            f"det_head={n_det:,}  total={n_total:,}"
-        )
-        lat_str = f"cpu={latency['cpu_ms']:.3f}ms"
-        if "gpu_ms" in latency:
-            lat_str += f"  gpu={latency['gpu_ms']:.3f}ms"
-        print(f"[lstm eval/{fold_name}] latency (batch=1, {100}iter): {lat_str}")
+    logger.info(
+        f"params: enc={n_enc:,}  det_head={n_det:,}  total={n_total:,}"
+    )
+    lat_str = f"cpu={latency['cpu_ms']:.3f}ms"
+    if "gpu_ms" in latency:
+        lat_str += f"  gpu={latency['gpu_ms']:.3f}ms"
+    logger.info(f"latency (batch=1, 100iter): {lat_str}")
 
     # ── threshold (val_9_1) ───────────────────────────────────────────────
     threshold, val_f1 = _calibrate_threshold_lstm(
@@ -334,32 +335,32 @@ def evaluate_fold_lstm(
     det_metrics_9  = _run_det_eval(logits_9,  bl_9,  tl_9)
     per_type_recall = det_metrics_50["per_type_recall"]
 
-    if verbose:
-        for label, dm in [
-            ("test_50_50 (native)", det_metrics_50),
-            ("test_9_1  (field)",   det_metrics_9),
-        ]:
-            print(
-                f"[lstm eval/{fold_name}] Detection [{label}]  "
-                f"thr={threshold:.4f}  val_f1={val_f1:.4f}"
-            )
-            print(
-                f"  default(0.50): acc={dm['default_thr']['accuracy']:.3f}  "
-                f"prec={dm['default_thr']['precision']:.3f}  "
-                f"rec={dm['default_thr']['recall']:.3f}  "
-                f"F1={dm['default_thr']['f1']:.3f}"
-            )
-            print(
-                f"  optimal:       acc={dm['accuracy']:.3f}  "
-                f"prec={dm['precision']:.3f}  "
-                f"rec={dm['recall']:.3f}  "
-                f"F1={dm['f1']:.3f}"
-            )
-            print(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
-        print("  per-type recall (test_50_50, optimal threshold):")
-        for tn, r in sorted(per_type_recall.items()):
-            mark = "  ◀ UNSEEN" if tn == unseen_type else ""
-            print(f"    {tn:20s} recall={r:.3f}{mark}")
+    for label, dm in [
+        ("test_50_50 (native)", det_metrics_50),
+        ("test_9_1  (field)",   det_metrics_9),
+    ]:
+        logger.info(
+            f"Detection [{label}]  thr={threshold:.4f}  val_f1={val_f1:.4f}"
+        )
+        logger.info(
+            f"  default(0.50): acc={dm['default_thr']['accuracy']:.3f}  "
+            f"prec={dm['default_thr']['precision']:.3f}  "
+            f"rec={dm['default_thr']['recall']:.3f}  "
+            f"F1={dm['default_thr']['f1']:.3f}"
+        )
+        logger.info(
+            f"  optimal:       acc={dm['accuracy']:.3f}  "
+            f"prec={dm['precision']:.3f}  "
+            f"rec={dm['recall']:.3f}  "
+            f"F1={dm['f1']:.3f}"
+        )
+        logger.info(f"  AUC-ROC={dm['auc_roc']:.4f}  AUC-PR={dm['auc_pr']:.4f}")
+    logger.info("  per-type recall (test_50_50, optimal threshold):")
+    for tn, r in sorted(per_type_recall.items()):
+        mark = "  ◀ UNSEEN" if tn == unseen_type else ""
+        logger.info(f"    {tn:20s} recall={r:.3f}{mark}")
+    writer.add_scalar("eval/auc_roc_50_50", det_metrics_50.get("auc_roc", float("nan")))
+    writer.add_scalar("eval/auc_roc_9_1",   det_metrics_9.get("auc_roc", float("nan")))
 
     # ── Classification (test_50_50, known attack types) ───────────────────
     known_type_names = set(class_names.values())
@@ -405,12 +406,10 @@ def evaluate_fold_lstm(
                 cls_targets, cls_preds, labels=list(range(num_classes))
             ).tolist(),
         }
-        if verbose:
-            print(
-                f"[lstm eval/{fold_name}] Classification  "
-                f"acc={cls_metrics['accuracy']:.3f}  "
-                f"(N={cls_mask.sum()})"
-            )
+        logger.info(
+            f"Classification  acc={cls_metrics['accuracy']:.3f}  "
+            f"(N={cls_mask.sum()})"
+        )
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
     out_root = Path(cfg.get("output_dir", "outputs/scores_lstm"))
@@ -429,6 +428,7 @@ def evaluate_fold_lstm(
     fig_dir = Path(cfg.get("figure_dir", "outputs/figures_lstm")) / fold_name
     plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
 
+    writer.close()
     return {
         "detection_50_50": det_metrics_50,
         "detection_9_1":   det_metrics_9,

@@ -1,9 +1,9 @@
-"""downstream fold 데이터 생성 스크립트.
+﻿"""downstream fold 데이터 생성 스크립트.
 
 사용법::
 
     python scripts/prepare_downstream_data.py \
-        [--config configs/downstream/attack_injection.yaml]
+        [--config configs/downstream_transformer/attack_injection.yaml]
 
 동작:
     1. attack_injection.yaml 에서 경로/시드/주입 파라미터/fold 정의를 읽음
@@ -48,7 +48,7 @@ def _print_stats(stats: dict) -> None:
     print("=" * 65)
 
 
-def main(config_path: str = "configs/downstream/attack_injection.yaml") -> None:
+def main(config_path: str = "configs/downstream_transformer/attack_injection.yaml") -> None:
     cfg = _load_cfg(config_path)
 
     pretrain_dir = Path(cfg["pretrain_dir"])
@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate downstream fold data")
     parser.add_argument(
         "--config",
-        default="configs/downstream/attack_injection.yaml",
+        default="configs/downstream_transformer/attack_injection.yaml",
         help="path to attack_injection.yaml",
     )
     args = parser.parse_args()
