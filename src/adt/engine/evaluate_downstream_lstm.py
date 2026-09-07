@@ -136,7 +136,6 @@ def _measure_latency(
     result: dict[str, float] = {"cpu_ms": sum(cpu_times) / len(cpu_times)}
 
     if device.type == "cuda":
-        import torch.cuda
         starter = torch.cuda.Event(enable_timing=True)
         ender   = torch.cuda.Event(enable_timing=True)
         gpu_times: list[float] = []
