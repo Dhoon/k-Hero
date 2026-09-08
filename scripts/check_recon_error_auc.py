@@ -49,6 +49,7 @@ def extract_bottleneck_and_error(
 def main(
     config: str = "configs/downstream_lstm/default.yaml",
     fold: str = "all_type",
+    encoder_ckpt: str | None = None,
 ) -> None:
     with open(config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -68,8 +69,9 @@ def main(
     encoder = LSTMEncoder(n_features, hidden_dim, num_layers).to(device)
     decoder = LSTMDecoder(bottleneck, n_features, num_layers=1).to(device)
 
-    # encoder: downstream finetuned (bce_unfreeze)
-    det_ckpt = Path(det_cfg["ckpt_dir"]) / "bce_unfreeze" / fold / "detector" / "best.pt"
+    # encoder: --encoder_ckpt 우선, 없으면 bce_unfreeze/{fold}/detector/best.pt fallback
+    default_det_ckpt = Path(det_cfg["ckpt_dir"]) / "bce_unfreeze" / fold / "detector" / "best.pt"
+    det_ckpt = Path(encoder_ckpt) if encoder_ckpt is not None else default_det_ckpt
     if det_ckpt.exists():
         ckpt = torch.load(det_ckpt, map_location="cpu")
         key = "encoder" if "encoder" in ckpt else None
@@ -126,5 +128,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/downstream_lstm/default.yaml")
     parser.add_argument("--fold",   default="all_type")
+    parser.add_argument(
+        "--encoder_ckpt",
+        default=None,
+        help="encoder best.pt 경로 (기본: checkpoints/downstream_lstm/bce_unfreeze/{fold}/detector/best.pt)",
+    )
     args = parser.parse_args()
-    main(args.config, args.fold)
+    main(args.config, args.fold, args.encoder_ckpt)
