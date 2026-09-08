@@ -19,6 +19,10 @@ detection:
   warmup_steps: 0
   ckpt_dir: checkpoints/downstream_lstm
   log_dir: logs/downstream_lstm
+  loss_type: "bce"        # "bce" | "focal"
+  focal_gamma: 2.0
+  focal_alpha: 0.5
+  encoder_mode: "unfreeze"  # "unfreeze" | "freeze"
 
 classification:
   hidden_dim: 32

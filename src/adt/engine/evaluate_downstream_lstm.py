@@ -276,7 +276,10 @@ def evaluate_fold_lstm(
         bottleneck_dim, num_classes, cls_cfg["hidden_dim"], cls_cfg["dropout"]
     ).to(device)
 
-    enc_path = det_ckpt_dir / "encoder_finetuned.pt"
+    loss_type    = det_cfg.get("loss_type", "bce")
+    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
+    enc_ckpt_name = f"encoder_finetuned_{loss_type}_{encoder_mode}.pt"
+    enc_path = det_ckpt_dir / enc_ckpt_name
     if enc_path.exists():
         encoder.load_state_dict(torch.load(enc_path, map_location="cpu")["encoder"])
         logger.info(f"finetuned encoder: {enc_path}")

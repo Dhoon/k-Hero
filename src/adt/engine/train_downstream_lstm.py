@@ -40,6 +40,24 @@ from src.adt.utils.logger import get_logger
 from src.adt.utils.seed import set_seed
 
 
+class _FocalLoss(nn.Module):
+    """Binary Focal Loss (logit input, reduction=mean)."""
+
+    def __init__(self, gamma: float = 2.0, alpha: float = 0.5) -> None:
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, reduction="none"
+        )
+        probs   = torch.sigmoid(logits)
+        pt      = probs * targets + (1 - probs) * (1 - targets)
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        return (alpha_t * (1 - pt) ** self.gamma * bce).mean()
+
+
 def _cosine_lr(
     optimizer: torch.optim.Optimizer,
     total_steps: int,
@@ -165,11 +183,23 @@ def train_fold_lstm(
         json.dumps(class_names, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    pw_tensor   = torch.tensor([pw_float], device=device)
-    det_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pw_tensor)
+    loss_type    = det_cfg.get("loss_type", "bce")
+    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
+    enc_ckpt_name = f"encoder_finetuned_{loss_type}_{encoder_mode}.pt"
+
+    if loss_type == "focal":
+        det_loss_fn: nn.Module = _FocalLoss(
+            gamma=det_cfg.get("focal_gamma", 2.0),
+            alpha=det_cfg.get("focal_alpha", 0.5),
+        )
+    else:
+        pw_tensor   = torch.tensor([pw_float], device=device)
+        det_loss_fn = nn.BCEWithLogitsLoss(pos_weight=pw_tensor)
     cls_loss_fn = nn.CrossEntropyLoss()
 
-    # ── Phase 1: Detection (encoder 완전 unfreeze) ────────────────────────
+    logger.info(f"loss_type={loss_type}  encoder_mode={encoder_mode}")
+
+    # ── Phase 1: Detection ────────────────────────────────────────────────
     encoder  = LSTMEncoder(n_features, hidden_dim, num_layers).to(device)
     det_head = LSTMDetectionHead(
         bottleneck_dim, det_cfg["hidden_dim"], det_cfg["dropout"]
@@ -184,9 +214,12 @@ def train_fold_lstm(
         logger.warning("pretrain_ckpt not found — random init")
 
     for p in encoder.parameters():
-        p.requires_grad_(True)
+        p.requires_grad_(encoder_mode == "unfreeze")
 
-    det_params = list(encoder.parameters()) + list(det_head.parameters())
+    if encoder_mode == "unfreeze":
+        det_params = list(encoder.parameters()) + list(det_head.parameters())
+    else:
+        det_params = list(det_head.parameters())
     det_optim  = torch.optim.AdamW(
         det_params, lr=det_cfg["lr"], weight_decay=det_cfg["weight_decay"]
     )
@@ -219,7 +252,7 @@ def train_fold_lstm(
             best_det_auc = val_auc
             torch.save(
                 {"encoder": encoder.state_dict()},
-                det_ckpt_dir / "encoder_finetuned.pt",
+                det_ckpt_dir / enc_ckpt_name,
             )
 
         save_checkpoint(
@@ -247,7 +280,7 @@ def train_fold_lstm(
     logger.info(f"[det] done  best_auc={best_det_auc:.4f}")
 
     # ── Phase 2: Classification (Phase 1 best encoder freeze) ─────────────
-    best_enc_path = det_ckpt_dir / "encoder_finetuned.pt"
+    best_enc_path = det_ckpt_dir / enc_ckpt_name
     if best_enc_path.exists():
         encoder.load_state_dict(
             torch.load(best_enc_path, map_location="cpu")["encoder"]
