@@ -179,8 +179,8 @@ def train_fold_lstm(
     encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
     mode_tag = f"{loss_type}_{encoder_mode}"
 
-    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / f"detector_{mode_tag}"
-    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / f"classifier_{mode_tag}"
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / mode_tag / fold_name / "detector"
+    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / mode_tag / fold_name / "classifier"
     det_ckpt_dir.mkdir(parents=True, exist_ok=True)
     cls_ckpt_dir.mkdir(parents=True, exist_ok=True)
     (cls_ckpt_dir / "class_names.json").write_text(
