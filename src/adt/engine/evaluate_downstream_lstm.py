@@ -282,8 +282,16 @@ def evaluate_fold_lstm(
 
     enc_path = det_ckpt_dir / "best.pt"
     if enc_path.exists():
-        encoder.load_state_dict(torch.load(enc_path, map_location="cpu")["encoder"])
-        logger.info(f"encoder loaded from: {enc_path}")
+        ckpt = torch.load(enc_path, map_location="cpu")
+        if "encoder" in ckpt:
+            encoder.load_state_dict(ckpt["encoder"])
+            logger.info(f"encoder loaded from: {enc_path}")
+        else:
+            # 구 포맷: encoder_finetuned.pt 별도 저장
+            legacy = det_ckpt_dir / "encoder_finetuned.pt"
+            if legacy.exists():
+                encoder.load_state_dict(torch.load(legacy, map_location="cpu")["encoder"])
+                logger.info(f"encoder loaded from (legacy): {legacy}")
 
     det_best = det_ckpt_dir / "best.pt"
     if det_best.exists():
