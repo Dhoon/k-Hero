@@ -1,207 +1,297 @@
-# Campus Power Meter Attack Detection (SSL Transformer)
+# Campus Power Meter Attack Detection
 
-네트워크로 측정값을 전송하는 교내 전력계(power meter)의 시계열 데이터를 대상으로, 사이버 공격에 의해 변조된 측정값을 탐지하는 프로젝트입니다.
+네트워크로 측정값을 전송하는 교내 전력계(power meter)의 시계열 데이터를 대상으로, 사이버 공격에 의해 변조된 측정값을 탐지·분류하는 프로젝트입니다.
 
-Self-Supervised Learning(SSL)으로 정상 전력 시계열의 패턴을 먼저 학습한 뒤, 이 pretrained Transformer 인코더에 두 개의 독립된 downstream head를 붙여 학습합니다. encoder는 기본적으로 fine-tuning(Tier 1: 전체 LayerNorm, Tier 2: 전체 LayerNorm + 마지막 block attention/FFN)하며, `--mode t1/t2` CLI 인자로 선택합니다.
+두 가지 백본 아키텍처를 병행 구현합니다.
 
-1. Attack Detection — 공격 여부 판단 (binary: Normal vs Attack)
-2. Attack Classification — 공격 유형 분류 (multi-class, Normal 제외)
+| 백본 | Pretrain | Downstream |
+|------|----------|------------|
+| **LSTM** (주 실험) | LSTM Autoencoder (MSE 재구성) | Sequential (Phase 1 Detection → Phase 2 Classification) 또는 Joint Multi-task |
+| **Transformer** | Masked Reconstruction + Forecasting SSL | 두 head 독립 fine-tuning (t1/t2) |
 
-두 head는 파라미터·loss·checkpoint가 완전히 분리된 별도의 모델입니다 (서로의 gradient에 영향을 주지 않음). fold 하나당 encoder를 한 번만 통과시키고, 그 결과로 두 head를 같은 스크립트 안에서 함께 학습합니다 (아래 워크플로우 참고).
+현재 활발히 개발·실험 중인 파이프라인은 LSTM 계열입니다.
+
+---
 
 ## 데이터
 
-`일자/시간, 유효전력량, 지상무효전력량, 진상무효전력량, 피상전력량` 4채널, 15분 단위 시계열입니다. `configs/data/default.yaml`에서 윈도우 길이(L)와 전처리 방식을 정의합니다.
+`유효전력량, 지상무효전력량, 진상무효전력량, 피상전력량` 4채널, 15분 단위 시계열입니다.  
+`configs/data/default.yaml`에서 윈도우 길이(L)와 전처리 방식을 정의합니다.
 
 ### 공격 유형 (5종)
 
 | 유형 | 설명 |
-|---|---|
-| Scale Down | 일정 시간 정상값을 일정 비율로 축소 (magnitude만 작아짐, 형태는 유지) |
+|------|------|
+| Scale Down | 일정 시간 정상값을 일정 비율로 축소 (magnitude만 작아짐) |
 | Ramp | 일정 시간 값을 서서히 증가/감소 (점진적 이탈) |
 | Pulse Plateau | 일정 시간 값을 정상보다 높게 유지 (지속되는 상승) |
 | Replay | 과거 실제 정상 구간을 그대로 복사해 재전송 (값 자체는 정상 데이터) |
 | Instant Spike | 1~2 timestep만 순간적으로 크게 튐 |
 
-## 모델 구조
+### Val/Test 분포 변형
+
+각 fold마다 두 가지 분포 버전을 생성합니다.
+
+| 분할 | 비율 (Normal : Attack) | 용도 |
+|------|----------------------|------|
+| `val_50_50` / `test_50_50` | 1 : 1 균형 | 메인 threshold calibration 및 AUC-ROC 보고 |
+| `val_9_1` / `test_9_1` | 9 : 1 실전 | 참고용 (현재 기본 평가는 50_50 기준) |
+
+---
+
+## LSTM 파이프라인 (주 실험)
+
+### 모델 구조
 
 ```
-Power-meter window X_t (L, 4)
+Power-meter window X  (B, T, C)
         ↓
-Pretrained Transformer Encoder
+LSTMEncoder (2-layer BiLSTM)
         ↓
-        z_t
+z  (B, 2*H)  — bottleneck
         ↓
- ┌─────────────────────────────┐
- │                             │
-Attack Detection 모델        Attack Classification 모델
-(MeanPool+MaxPool→MLP→binary) (MeanPool+MaxPool→MLP→multi-class)
-Normal(0) / Attack(1)        공격 유형 (Normal 제외 샘플만 학습)
+ ┌───────────────────────────┐
+ │                           │
+LSTMDetectionHead        LSTMClassificationHead
+(z → (B,) logit)         (z → (B, K) logits)
+Normal(0) / Attack(1)    공격 유형 (K-class)
 ```
 
-Transformer Encoder는 pretrain 단계에서 먼저 학습되고, downstream에서는 이 pretrained encoder를 fine-tuning(Tier 1/2)하면서 Detection head와 Classification head를 각각 독립적으로 학습합니다. fold 하나당 encoder forward는 한 번만 수행하고 그 z_t로 두 head를 함께 학습합니다.
+### 학습 모드
+
+**Sequential (Phase 1 → Phase 2)**
+
+Phase 1과 Phase 2가 독립적으로 실행되며 checkpoint가 분리됩니다.
+
+| Phase | 학습 대상 | val 기준 |
+|-------|----------|----------|
+| Phase 1 (Detection) | encoder + det_head | val_50_50 AUC-ROC |
+| Phase 2 (Classification) | cls_head만 (encoder freeze) | val_50_50 cls loss |
+
+`--loss_type`과 `--encoder_mode`로 Phase 1 방식을 선택합니다.
+
+| 옵션 | 값 | 설명 |
+|------|----|------|
+| `--loss_type` | `bce` (기본) | pos_weight-adjusted BCE |
+|  | `focal` | Binary Focal Loss (γ=2.0, α=0.5) |
+| `--encoder_mode` | `unfreeze` (기본) | Phase 1에서 encoder 전체 학습 |
+|  | `freeze` | Phase 1에서 encoder 완전 동결 |
+
+checkpoint 경로: `checkpoints/downstream_lstm/{loss_type}_{encoder_mode}/{fold}/`
+
+**Joint Multi-task**
+
+encoder + det_head + cls_head를 하나의 loss로 동시 학습합니다.
+
+```
+total_loss = w_det * BCE(det_logit, y_bin)
+           + w_cls * CE(cls_logit[attack], y_type[attack])
+```
+
+`w_det=1.0`, `w_cls=0.4`는 `configs/downstream_lstm_joint/default.yaml`에서 조정합니다.  
+checkpoint 경로: `checkpoints/downstream_lstm/joint/{fold}/best.pt`
+
+---
+
+## Transformer 파이프라인
+
+```
+Masked window X_masked  +  Clean window X_clean
+        ↓                          ↓
+Transformer Encoder (공유 weights, 배치 방향 cat 1회 호출)
+        ↓                          ↓
+Reconstruction Head            Forecasting Head
+(주 objective)                  (보조 objective, h-step 예측)
+
+L_pretrain = L_mask + λ * L_forecast     (λ ≈ 0.15)
+```
+
+Downstream에서는 pretrained encoder만 가져와 fine-tuning합니다.
+- `t1`: 전체 LayerNorm affine만 (~2K params)
+- `t2`: 전체 LayerNorm + 마지막 block attention/FFN (~68K params)
+
+Attack Detection head와 Classification head는 파라미터·loss·checkpoint가 완전히 분리된 독립 모델입니다.
+
+---
+
+## 평가 방법
+
+**All-Type Evaluation**: 5종 공격을 train/val/test에 전부 사용. Known 패턴 sanity check.
+
+**Unseen-Attack Evaluation (Leave-One-Attack-Out)**: 공격 1종을 downstream train/val에서 완전 제외하고, all_type test set으로 그 공격에 대한 Detection 반응을 확인. fold 6개 × backbone × 학습 모드 수만큼 모델이 나옵니다.
+
+**threshold calibration**: val_50_50 F1-max sweep → `threshold.json`에 저장.  
+**Detection 보고**: test_50_50 (default thr=0.5 + optimal thr) + AUC-ROC + AUC-PR + per-type recall.  
+**Classification 보고**: test_50_50 attack 샘플 중 known type만 대상, macro F1/acc + per-type prec/rec.
+
+---
 
 ## 디렉토리 구조
 
 ```
 campus-power-ad/
 ├── configs/
-│   ├── data/default.yaml                 # 전처리·윈도잉 설정 (4채널)
-│   ├── pretrain/default.yaml             # masked reconstruction + forecasting joint 설정
-│   └── downstream/
-│       ├── attack_injection.yaml         # 5종 공격 주입 파라미터 + fold별 데이터 생성 설정
-│       └── default.yaml                  # Detection+Classification head 설정 1개, --fold CLI 인자로 6개 fold 실행
+│   ├── data/default.yaml                      # 전처리·윈도잉 설정 (4채널)
+│   ├── pretrain_lstm/default.yaml             # LSTM AE pretrain 설정
+│   ├── pretrain_transformer/default.yaml      # Transformer SSL pretrain 설정
+│   ├── downstream_lstm/default.yaml           # LSTM Sequential downstream 설정
+│   ├── downstream_lstm_joint/default.yaml     # LSTM Joint downstream 설정
+│   └── downstream_transformer/
+│       ├── default.yaml                       # Transformer downstream 설정
+│       └── attack_injection.yaml              # 5종 공격 파라미터
 ├── data/
-│   ├── raw/                              # 원본 xls (건드리지 않음, git 제외)
-│   ├── interim/                          # 중간 산출물 (git 제외)
+│   ├── raw/                                   # 원본 xls (git 제외)
+│   ├── interim/                               # 중간 산출물 (git 제외)
 │   └── processed/
 │       ├── scaler.joblib
-│       ├── status_events/                # 계기별 상태정보 이벤트 분류 결과
-│       ├── pretrain/                     # 레이블 없는 정상 데이터 (forecasting target 포함)
-│       │   └── train/ val/ test/
-│       └── downstream/                   # fold별 최종 데이터셋 (한 번 생성, 고정 시드, 재사용)
-│           ├── all_type/                 #   Normal+5종, train/val/test
-│           ├── unseen_scale_down/        #   Normal+4종(Scale Down 제외), train/val만
+│       ├── pretrain/                          # 정상 데이터 (train/val/test)
+│       └── downstream/                        # fold별 데이터셋 (고정 시드, 1회 생성)
+│           ├── all_type/                      # Normal + 5종
+│           │   ├── train/  val_50_50/  val_9_1/  test_50_50/  test_9_1/
+│           ├── unseen_scale_down/             # Normal + 4종 (train/val만)
 │           ├── unseen_ramp/
 │           ├── unseen_pulse_plateau/
 │           ├── unseen_replay/
 │           └── unseen_instant_spike/
-│               (Detection·Classification 모델 둘 다 이 fold 데이터를 공유.
-│                Classification은 그중 Normal 제외 샘플만 사용)
 ├── src/adt/
 │   ├── data/
 │   │   ├── loaders.py, preprocessing.py, windowing.py, scalers.py, dataset.py
-│   │   ├── attack_injection.py           # 5종 공격 주입 함수 (raw scale에서 동작)
-│   │   └── labeling.py                   # fold별 데이터셋(all_type/unseen_*) 생성 오케스트레이션
+│   │   ├── attack_injection.py                # 5종 공격 주입 함수
+│   │   └── labeling.py                        # fold별 데이터셋 생성 오케스트레이션
 │   ├── models/
-│   │   ├── encoder.py, positional_encoding.py
-│   │   └── heads/
-│   │       ├── reconstruction_head.py    # pretrain 전용, downstream에서는 제거
-│   │       ├── forecasting_head.py       # pretrain 전용, downstream에서는 제거
-│   │       ├── detection_head.py         # MeanPool+MaxPool → MLP → binary
-│   │       └── classification_head.py    # MeanPool+MaxPool → MLP → multi-class
-│   ├── ssl/
-│   │   ├── masking.py                    # segment 단위 고정 마스킹 (15%)
-│   │   └── losses.py                     # L_mask + lambda * L_forecast
+│   │   ├── lstm_ae.py                         # LSTMEncoder, LSTMDecoder, LSTMAutoencoder
+│   │   │                                      #   + LSTMDetectionHead, LSTMClassificationHead
+│   │   ├── lstm_joint.py                      # LSTMJoint (shared encoder → det + cls)
+│   │   ├── transformer_encoder.py             # Transformer 백본
+│   │   └── heads/                             # Transformer downstream heads
 │   ├── engine/
-│   │   ├── pretrain.py
-│   │   ├── train_downstream.py           # fold 하나당 encoder 1회 forward → detector+classifier 함께 학습
-│   │   └── evaluate_downstream.py        # fold 하나당 encoder 1회 forward → detector+classifier 함께 평가
-│   ├── utils/                            # seed, logger, checkpoint, metrics
-│   └── inference/detect.py
-├── scripts/                              # CLI 진입점 (각 engine 함수 호출)
-├── notebooks/                            # 탐색적 데이터분석
-├── docs/
-│   └── pretrain_methodology.md           # 방법론 문서 (이 프로젝트의 최종 설계 기준)
+│   │   ├── pretrain_lstm.py                   # LSTM AE 학습 루프
+│   │   ├── train_downstream_lstm.py           # LSTM Sequential Phase 1+2 학습
+│   │   ├── evaluate_downstream_lstm.py        # LSTM Sequential 평가
+│   │   ├── train_downstream_lstm_joint.py     # LSTM Joint 학습
+│   │   ├── evaluate_downstream_lstm_joint.py  # LSTM Joint 평가
+│   │   ├── pretrain_transformer.py            # Transformer SSL 학습
+│   │   ├── train_downstream_transformer.py    # Transformer downstream 학습
+│   │   └── evaluate_downstream_transformer.py # Transformer downstream 평가
+│   ├── ssl/                                   # masking.py, losses.py (Transformer 전용)
+│   └── utils/                                 # seed, logger, checkpoint, metrics
+├── scripts/
+│   ├── prepare_data.py
+│   ├── prepare_downstream_data.py
+│   ├── pretrain_lstm.py
+│   ├── pretrain_transformer.py
+│   ├── train_downstream_lstm.py               # --loss_type / --encoder_mode / --fold
+│   ├── evaluate_downstream_lstm.py            # --calib / --loss_type / --encoder_mode / --fold
+│   ├── train_downstream_lstm_joint.py         # --fold
+│   ├── evaluate_downstream_lstm_joint.py      # --fold
+│   ├── train_downstream_transformer.py        # --mode t1/t2 / --fold
+│   ├── evaluate_downstream_transformer.py     # --calib / --fold
+│   ├── check_recon_error_auc.py               # recon error AUC 진단 스크립트
+│   └── infer.py
+├── tests/
+│   ├── test_lstm.py, test_lstm_joint.py
+│   ├── test_models.py, test_engine.py
+│   ├── test_downstream.py, test_windowing.py
+│   ├── test_anomaly_injection.py, test_labeling.py
 ├── checkpoints/
-│   ├── pretrain/
-│   └── downstream/
-│       ├── all_type/
-│       │   ├── detector/                 # Attack Detection 모델
-│       │   └── classifier/               # Attack Classification 모델
-│       ├── unseen_scale_down/
-│       │   ├── detector/
-│       │   └── classifier/
-│       ├── unseen_ramp/
-│       │   ├── detector/
-│       │   └── classifier/
-│       ├── unseen_pulse_plateau/
-│       │   ├── detector/
-│       │   └── classifier/
-│       ├── unseen_replay/
-│       │   ├── detector/
-│       │   └── classifier/
-│       └── unseen_instant_spike/
-│           ├── detector/
-│           └── classifier/
-├── logs/                                 # checkpoints와 동일 구조
+│   ├── pretrain_lstm/best.pt
+│   ├── pretrain_transformer/best.pt
+│   └── downstream_lstm/
+│       ├── bce_unfreeze/{fold}/detector/best.pt   # encoder + det_head
+│       │                      /classifier/best.pt  # cls_head
+│       ├── bce_freeze/{fold}/...
+│       ├── focal_unfreeze/{fold}/...
+│       ├── focal_freeze/{fold}/...
+│       └── joint/{fold}/best.pt                   # encoder + det_head + cls_head
+├── logs/                                          # TensorBoard 로그 (checkpoints와 동일 구조)
 ├── outputs/
-│   ├── figures/                          # checkpoints와 동일 구조
-│   └── scores/                           # checkpoints와 동일 구조
-└── tests/
+│   ├── scores_lstm/     scores_lstm_joint/        # metrics.json
+│   └── figures_lstm/    figures_lstm_joint/        # per-type recall 차트
+└── docs/
+    └── pretrain_methodology.md
 ```
+
+---
 
 ## 데이터 관리 정책
 
 - `data/raw/`, `data/interim/`, `data/processed/`의 실제 파일은 git에 올리지 않습니다 (`.gitignore`에서 제외, 폴더 구조 유지용 `.gitkeep`만 추적).
-- 원본 xls는 로컬 또는 팀 공유 드라이브에만 보관하고, 새 컴퓨터에서 clone한 뒤에는 `data/raw/`에 원본 파일을 직접 복사해 넣어서 씁니다.
-- git에는 코드 + 설정(configs/*.yaml) + 문서만 버전관리합니다. 체크포인트(`checkpoints//*.pt`)도 같은 이유로 제외됩니다.
+- 체크포인트(`checkpoints/**/*.pt`)도 git에서 제외됩니다.
+- 원본 xls는 로컬 또는 팀 공유 드라이브에만 보관하고, 새 컴퓨터에서 clone한 뒤 `data/raw/`에 원본 파일을 복사해 사용합니다.
 
-## Pretraining
-
-정상 시계열에 segment 단위 고정 마스킹(15%)을 적용한 Masked Reconstruction(주 objective)과, 마스킹 없는 원본 window로 미래 h step을 예측하는 Forecasting(보조 objective, weight λ≈0.1~0.2)을 같은 step에서 함께 학습합니다. 두 objective는 forward pass를 분리합니다 — masked pass → Reconstruction head, clean pass → Forecasting head.
-
-```
-L_pretrain = L_mask + lambda * L_forecast
-```
-
-Pretraining이 끝나면 Reconstruction Head와 Forecasting Head는 버리고, Transformer Encoder만 downstream에서 재사용합니다.
-
-## 평가 방법
-
-All-Type Evaluation: 5종 공격을 모두 train/val/test에 사용해 Attack Detection(Normal vs Attack), Attack Classification(5-class) 성능을 확인합니다. 이미 알고 있는 패턴을 잘 맞추는지 보는 sanity check 성격이며, 미지의 공격에 대한 일반화를 보장하지 않습니다.
-
-Unseen-Attack Evaluation (Leave-One-Attack-Out): 5종 공격 중 하나를 downstream 학습에서 완전히 제외하고, 나머지 4종+Normal로 Attack Detection 모델을 학습합니다. 테스트에서 제외했던 공격을 처음 입력해서 "정상이 아니다"라고 판단할 수 있는지 확인합니다. 같은 fold의 Attack Classification 모델은 held-out 타입 없이(4-class) 학습되며, known type(4종) 분류 성능만 확인합니다 — held-out 타입을 분류하는 건 이 모델의 역할이 아닙니다. 5종 각각에 대해 반복하며, fold 6개 × 모델 2개(Detection+Classification) = 총 12개 모델을 학습합니다. Unseen fold의 Detection 결과가 실제 generalization 성능을 나타내는 핵심 지표입니다.
-
-Replay는 값 자체가 실제 정상 데이터라 window 내부 값만으로는 정상과 구분이 안 됩니다. 탐지 가능한 신호는 replay 구간 경계의 값 불연속뿐이므로, downstream 데이터는 attack 경계를 포함하는 overlap window(stride < window 길이)로 구성합니다.
-
-### Train / Val / Test 분할
-
-fold별 최종 데이터셋은 고정 시드로 한 번만 생성해서 그대로 씁니다 (fold마다 다시 만들지 않음 — 같은 유형의 데이터는 fold 간에 바이트 단위로 동일해야 비교가 공정합니다). Detection과 Classification은 같은 fold 데이터를 공유하되, Classification은 그중 Normal을 제외한 샘플만 사용합니다.
-
-- all_type: Normal + 5종 전부, train/val/test 다 이 구성
-- unseen_X: Normal + (X 제외 4종), train/val만 생성 (X는 여기 등장 안 함 — val이 체크포인트 선택에 쓰이는데 여기 X가 섞이면 평가가 오염됨)
-- test는 all_type의 test 하나만 존재하며, 6개 fold의 Detection 모델 평가에 전부 이걸로 평가합니다. unseen_X 모델 입장에서는 이 test set에 자기가 한 번도 못 본 X가 포함되어 있으므로, 거기서의 반응이 핵심 결과가 됩니다.
-
-```
-all_type:  train/val/test = Normal + 5종 전부
-unseen_X:  train/val      = Normal + (X 제외 4종)    (test 없음, all_type/test 재사용)
-```
+---
 
 ## 워크플로우
 
+### 공통: 데이터 준비
+
 ```bash
-# 1) 원본 데이터 전처리 + pretrain용 정상 데이터 생성
+# 1) 원본 데이터 전처리
 python scripts/prepare_data.py --config configs/data/default.yaml
 
-# 2) SSL pretraining (masked reconstruction + forecasting joint)
-python scripts/pretrain.py --config configs/pretrain/default.yaml
-
-# 3) downstream용 fold별 데이터셋 생성 (attack injection, 고정 시드로 한 번만 실행)
-python scripts/prepare_downstream_data.py --config configs/downstream/attack_injection.yaml
-
-# 4) Attack Detection + Classification 학습
-#    --mode: t1=LayerNorm만 fine-tune, t2=LayerNorm+마지막 block (생략 시 yaml 기본값 사용)
-#    (a) 전체 6개 fold를 한 번에 (--fold 생략 또는 all)
-python scripts/train_downstream.py --config configs/downstream/default.yaml --mode t2
-#    (b) fold 하나만 개별 실행하고 싶을 때
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold all_type --mode t2
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down --mode t2
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp --mode t2
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau --mode t2
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_replay --mode t2
-python scripts/train_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike --mode t2
-
-# 5) 평가 (Detection은 6개 fold 전부 all_type의 test set으로 평가, Classification은 fold별 known-type만)
-#    (a) 전체 6개 fold를 한 번에 (--fold 생략 또는 all)
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml
-#    (b) fold 하나만 개별 실행하고 싶을 때
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold all_type
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_scale_down
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_ramp
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_pulse_plateau
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_replay
-python scripts/evaluate_downstream.py --config configs/downstream/default.yaml --fold unseen_instant_spike
-
-# 6) 새 데이터에 대한 추론
-python scripts/infer.py --ckpt checkpoints/downstream/all_type/detector/best.pt --input data/raw/new_lp.xlsx
+# 2) fold별 downstream 데이터셋 생성 (고정 시드, 1회만 실행)
+python scripts/prepare_downstream_data.py
 ```
+
+### LSTM 파이프라인 (주 실험)
+
+```bash
+# 3) LSTM AE pretrain
+python scripts/pretrain_lstm.py --config configs/pretrain_lstm/default.yaml
+
+# 4-A) Sequential downstream 학습 (all_type fold, bce_unfreeze 모드)
+python scripts/train_downstream_lstm.py --fold all_type
+
+# 4-A-alt) 다른 모드 지정
+python scripts/train_downstream_lstm.py --fold all_type --loss_type focal --encoder_mode freeze
+
+# 4-B) Joint multi-task 학습
+python scripts/train_downstream_lstm_joint.py --fold all_type
+
+# 5-A) Sequential 평가 (val_50_50 calibration, test_50_50 보고)
+python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50
+
+# 5-A-alt) 다른 모드 평가
+python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50 \
+    --loss_type focal --encoder_mode freeze
+
+# 5-B) Joint 평가
+python scripts/evaluate_downstream_lstm_joint.py --fold all_type
+```
+
+**checkpoint 경로 (Sequential)**
+```
+checkpoints/downstream_lstm/
+  bce_unfreeze/all_type/detector/best.pt    # encoder + det_head
+                        /classifier/best.pt # cls_head
+  focal_freeze/all_type/detector/best.pt
+               ...
+```
+
+**checkpoint 경로 (Joint)**
+```
+checkpoints/downstream_lstm/joint/all_type/best.pt  # encoder + det_head + cls_head
+```
+
+### Transformer 파이프라인
+
+```bash
+# 3) Transformer SSL pretrain (masked reconstruction + forecasting)
+python scripts/pretrain_transformer.py --config configs/pretrain_transformer/default.yaml
+
+# 4) Downstream 학습 (--mode t1 또는 t2)
+python scripts/train_downstream_transformer.py --fold all_type --mode t2
+
+# 5) 평가
+python scripts/evaluate_downstream_transformer.py --fold all_type --calib 50_50
+```
+
+---
 
 ## 설계 원칙
 
-- `models/encoder.py`의 Transformer 백본은 pretrain에서 먼저 학습되고, downstream에서는 fine-tuning 범위를 선택해서 씁니다. Tier 1(`--mode t1`): 전체 LayerNorm affine만 학습 가능(~2K params). Tier 2(`--mode t2`): 전체 LayerNorm + 마지막 transformer block의 attention/FFN 전체(~68K params). 12개 모델 전부 동일한 pretrained encoder 초기값에서 시작합니다.
-- Attack Detection과 Attack Classification은 역할이 다른 별개의 모델입니다 — Detection은 "공격인가 아닌가", Classification은 "공격이라면 어떤 유형인가"만 담당하며, 파라미터·loss·checkpoint가 완전히 분리된 독립적인 모델입니다 (서로의 gradient에 영향을 주지 않음).
-- `train_downstream.py`는 fold 하나당 encoder forward를 1번만 수행하고 그 z_t로 Detection head와 Classification head를 같은 실행 안에서 함께 학습합니다 (스크립트 실행은 fold당 1번, 총 6번 — 모델 개수는 여전히 12개). fine-tuning 모드(`--mode t1/t2`)를 쓸 때는 각 head마다 encoder 파라미터가 별도로 업데이트됩니다.
-- 두 head 다 all_type 1개 + unseen fold 5개, 총 6개 fold로 학습·평가되므로 전체 모델은 12개입니다. config 파일은 1개(`configs/downstream/default.yaml`)뿐이고 `--fold` CLI 인자로 fold를 선택합니다 (생략 시 6개 fold 전체 순차 실행).
-- `configs/downstream/attack_injection.yaml`이 공격 파라미터와 fold별 데이터 생성 방식의 단일 출처입니다. 모든 fold 데이터는 한 번만, 고정 시드로 생성하며 Detection·Classification이 이를 공유합니다.
-- unseen fold의 train/val은 held-out 타입을 완전히 제외하고, Detection 평가의 test는 all_type의 test를 6개 모델이 공유합니다.
+- **fold 구성**: `all_type`(5종 전부) + `unseen_{type}`(해당 공격 제외 4종) 각 5개 = 총 6 fold. test는 `all_type/test_{50_50|9_1}` 하나를 6 fold가 공유.
+- **Sequential vs Joint**: Sequential은 Detection과 Classification의 최적 checkpoint 기준을 완전히 분리할 수 있고, Joint은 z space를 공유해 추론 비용을 절감하며 두 task가 상호 보완적으로 학습됩니다.
+- **encoder_mode=freeze 사용 시**: encoder는 pretrain 가중치 그대로 동결. bottleneck z의 의미론이 변하지 않으므로 `check_recon_error_auc.py` 같은 재구성 오류 기반 진단이 안정적.
+- **threshold calibration**: val_50_50 F1-max sweep으로 threshold를 결정하고 `threshold.json`에 저장. 평가 시 자동 로드.
+- **Replay 탐지**: 값 자체가 정상 데이터이므로 구간 경계를 포함하는 overlap window(stride < window 길이)가 필수.
