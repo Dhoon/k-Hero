@@ -253,8 +253,12 @@ def evaluate_fold_lstm(
         ds_test_9, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
     )
 
-    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
-    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / "classifier"
+    loss_type    = det_cfg.get("loss_type", "bce")
+    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
+    mode_tag     = f"{loss_type}_{encoder_mode}"
+
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / f"detector_{mode_tag}"
+    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / f"classifier_{mode_tag}"
 
     # class_names
     class_names_path = cls_ckpt_dir / "class_names.json"
@@ -276,13 +280,10 @@ def evaluate_fold_lstm(
         bottleneck_dim, num_classes, cls_cfg["hidden_dim"], cls_cfg["dropout"]
     ).to(device)
 
-    loss_type    = det_cfg.get("loss_type", "bce")
-    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
-    enc_ckpt_name = f"encoder_finetuned_{loss_type}_{encoder_mode}.pt"
-    enc_path = det_ckpt_dir / enc_ckpt_name
+    enc_path = det_ckpt_dir / "best.pt"
     if enc_path.exists():
         encoder.load_state_dict(torch.load(enc_path, map_location="cpu")["encoder"])
-        logger.info(f"finetuned encoder: {enc_path}")
+        logger.info(f"encoder loaded from: {enc_path}")
 
     det_best = det_ckpt_dir / "best.pt"
     if det_best.exists():

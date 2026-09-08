@@ -175,17 +175,17 @@ def train_fold_lstm(
         num_workers=0, pin_memory=(device.type == "cuda"),
     )
 
-    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
-    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / "classifier"
+    loss_type    = det_cfg.get("loss_type", "bce")
+    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
+    mode_tag = f"{loss_type}_{encoder_mode}"
+
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / f"detector_{mode_tag}"
+    cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / fold_name / f"classifier_{mode_tag}"
     det_ckpt_dir.mkdir(parents=True, exist_ok=True)
     cls_ckpt_dir.mkdir(parents=True, exist_ok=True)
     (cls_ckpt_dir / "class_names.json").write_text(
         json.dumps(class_names, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-    loss_type    = det_cfg.get("loss_type", "bce")
-    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
-    enc_ckpt_name = f"encoder_finetuned_{loss_type}_{encoder_mode}.pt"
 
     if loss_type == "focal":
         det_loss_fn: nn.Module = _FocalLoss(
@@ -250,14 +250,11 @@ def train_fold_lstm(
         is_best = (not math.isnan(val_auc)) and (val_auc > best_det_auc)
         if is_best:
             best_det_auc = val_auc
-            torch.save(
-                {"encoder": encoder.state_dict()},
-                det_ckpt_dir / enc_ckpt_name,
-            )
 
         save_checkpoint(
             {
                 "epoch":     epoch + 1,
+                "encoder":   encoder.state_dict(),
                 "head":      det_head.state_dict(),
                 "optimizer": det_optim.state_dict(),
                 "val_auc":   val_auc,
@@ -280,7 +277,7 @@ def train_fold_lstm(
     logger.info(f"[det] done  best_auc={best_det_auc:.4f}")
 
     # ── Phase 2: Classification (Phase 1 best encoder freeze) ─────────────
-    best_enc_path = det_ckpt_dir / enc_ckpt_name
+    best_enc_path = det_ckpt_dir / "best.pt"
     if best_enc_path.exists():
         encoder.load_state_dict(
             torch.load(best_enc_path, map_location="cpu")["encoder"]
