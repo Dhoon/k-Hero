@@ -100,6 +100,7 @@ def small_cfg(tmp_path) -> dict:
     return {
         "downstream_dir": ds_dir,
         "output_dir": str(tmp_path / "outputs"),
+        "figure_dir": str(tmp_path / "outputs"),
         "seed": 42,
         "model": {
             "d_model": D, "n_heads": 4, "n_layers": 2,
@@ -424,11 +425,11 @@ class TestFoldIteration:
                 [i for i in range(5) if i != TYPE_IDX[unseen]]
                 if unseen else list(range(5))
             )
-            # train_fold reads val_50_50; evaluate_fold reads val_9_1 / test_50_50 / test_9_1
+            # train_fold reads val_50_50; evaluate_fold reads val_50_50 / test_50_50
             if fold_name == "all_type":
-                splits = ["train", "val_50_50", "val_9_1", "test_50_50", "test_9_1"]
+                splits = ["train", "val_50_50", "test_50_50"]
             else:
-                splits = ["train", "val_50_50", "val_9_1"]
+                splits = ["train", "val_50_50"]
             _make_fold_data(ds_dir, fold_name, splits, n_per_split=64, type_labels_present=types)
 
     def test_train_all_folds_iterates_6_times(self, tmp_path, small_cfg, encoder):
@@ -485,9 +486,9 @@ class TestEvaluateFiltering:
                 if unseen else list(range(5))
             )
             if fold_name == "all_type":
-                splits = ["train", "val_50_50", "val_9_1", "test_50_50", "test_9_1"]
+                splits = ["train", "val_50_50", "test_50_50"]
             else:
-                splits = ["train", "val_50_50", "val_9_1"]
+                splits = ["train", "val_50_50"]
             _make_fold_data(ds_dir, fold_name, splits, n_per_split=64, type_labels_present=types)
 
         # all_type만 학습 (class_names.json 생성을 위해)

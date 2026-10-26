@@ -1,8 +1,8 @@
 ﻿"""LSTM Downstream Detection + Classification 평가 루프.
 
 평가 원칙:
-  - threshold 탐색: val_9_1 (실전 분포) → F1-max sweep
-  - Detection 보고: test_50_50 (native balanced) + test_9_1 (field-representative) 두 view
+  - threshold 탐색: val_50_50 → F1-max sweep
+  - Detection 보고: test_50_50
   - Classification: test_50_50 사용, attack 샘플 + known type만 대상
   - 추가 출력: 파라미터 수 (encoder + det_head), CPU/GPU latency (batch=1, 100회 평균)
 """
@@ -166,16 +166,11 @@ def _calibrate_threshold_lstm(
     det_head: nn.Module,
     device: torch.device,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> tuple[float, float]:
-    """F1-max threshold 탐색 → threshold.json 저장.
-
-    Args:
-        calib: 캘리브레이션 기준 분포 — "9_1" (실전) 또는 "50_50" (균형)
-    """
+    """val_50_50 F1-max threshold 탐색 → threshold.json 저장."""
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg = cfg["detection"]
-    val_dir = downstream_dir / fold_name / f"val_{calib}"
+    val_dir = downstream_dir / fold_name / "val_50_50"
     ds_val  = DownstreamFoldDataset(val_dir)
     loader  = DataLoader(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
@@ -211,7 +206,7 @@ def _calibrate_threshold_lstm(
     )
     if verbose:
         print(
-            f"[lstm threshold/{fold_name}] val_{calib}  "
+            f"[lstm threshold/{fold_name}] val_50_50  "
             f"threshold={threshold:.4f}  val_f1={val_f1:.4f}"
         )
     return threshold, val_f1
@@ -224,13 +219,8 @@ def evaluate_fold_lstm(
     cfg: dict[str, Any],
     device: torch.device,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> dict[str, Any]:
-    """단일 fold 평가.  test_50_50 + test_9_1 두 view + 분류 + latency.
-
-    Args:
-        calib: threshold 캘리브레이션 기준 분포 — "9_1" 또는 "50_50"
-    """
+    """단일 fold 평가.  test_50_50 detection + 분류 + latency."""
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg   = cfg["detection"]
     cls_cfg   = cfg["classification"]
@@ -252,12 +242,8 @@ def evaluate_fold_lstm(
 
     # ── test sets (공유, all_type 아래) ──────────────────────────────────
     ds_test_50 = DownstreamFoldDataset(downstream_dir / "all_type" / "test_50_50")
-    ds_test_9  = DownstreamFoldDataset(downstream_dir / "all_type" / "test_9_1")
     loader_50  = DataLoader(
         ds_test_50, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
-    )
-    loader_9 = DataLoader(
-        ds_test_9, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
     )
 
     det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / mode_tag / fold_name / "detector"
@@ -326,7 +312,7 @@ def evaluate_fold_lstm(
 
     # ── threshold 캘리브레이션 ────────────────────────────────────────────
     threshold, val_f1 = _calibrate_threshold_lstm(
-        fold_name, cfg, encoder, det_head, device, verbose=verbose, calib=calib
+        fold_name, cfg, encoder, det_head, device, verbose=verbose
     )
 
     # ── recall-target 테이블 (val_50_50 기준) ─────────────────────────────
@@ -394,15 +380,11 @@ def evaluate_fold_lstm(
         }
 
     logits_50, bl_50, tl_50 = _infer_lstm(encoder, det_head, loader_50, device)
-    logits_9,  bl_9,  tl_9  = _infer_lstm(encoder, det_head, loader_9,  device)
     det_metrics_50 = _run_det_eval(logits_50, bl_50, tl_50)
-    det_metrics_9  = _run_det_eval(logits_9,  bl_9,  tl_9)
-    # calib에 맞는 test view만 출력
-    dm_show    = det_metrics_50 if calib == "50_50" else det_metrics_9
-    label_show = "test_50_50 (native)" if calib == "50_50" else "test_9_1  (field)"
+    dm_show = det_metrics_50
     per_type_recall = dm_show["per_type_recall"]
 
-    logger.info(f"Detection [{label_show}]  thr={threshold:.4f}  val_f1={val_f1:.4f}")
+    logger.info(f"Detection [test_50_50]  thr={threshold:.4f}  val_f1={val_f1:.4f}")
     logger.info(
         f"  default(0.50): acc={dm_show['default_thr']['accuracy']:.3f}  "
         f"prec={dm_show['default_thr']['precision']:.3f}  "
@@ -420,8 +402,7 @@ def evaluate_fold_lstm(
     for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
         mark = "  ◀ UNSEEN" if tn == unseen_type else ""
         logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
-    auc_key = "eval/auc_roc_50_50" if calib == "50_50" else "eval/auc_roc_9_1"
-    writer.add_scalar(auc_key, dm_show.get("auc_roc", float("nan")))
+    writer.add_scalar("eval/auc_roc_50_50", dm_show.get("auc_roc", float("nan")))
 
     # ── Classification (test_50_50, known attack types) ───────────────────
     known_type_names = set(class_names.values())
@@ -488,7 +469,6 @@ def evaluate_fold_lstm(
     out_root = Path(cfg.get("output_dir", "outputs/lstm"))
     for task, metrics in [
         ("detector_50_50", {**det_metrics_50, "n_params": n_total, "latency": latency}),
-        ("detector_9_1",   det_metrics_9),
         ("classifier",     cls_metrics),
     ]:
         out_dir = out_root / mode_tag / fold_name / task
@@ -504,7 +484,6 @@ def evaluate_fold_lstm(
     writer.close()
     return {
         "detection_50_50": det_metrics_50,
-        "detection_9_1":   det_metrics_9,
         "classification":  cls_metrics,
         "n_params":        n_total,
         "latency":         latency,
@@ -516,12 +495,11 @@ def evaluate_all_folds_lstm(
     device: torch.device,
     folds: list[str] | None = None,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> dict[str, dict]:
     targets = folds if folds is not None else ALL_FOLDS
     results: dict[str, dict] = {}
     for fold in targets:
         if verbose:
             print(f"\n{'='*60}\n fold: {fold}\n{'='*60}")
-        results[fold] = evaluate_fold_lstm(fold, cfg, device, verbose=verbose, calib=calib)
+        results[fold] = evaluate_fold_lstm(fold, cfg, device, verbose=verbose)
     return results

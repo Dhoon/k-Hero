@@ -103,14 +103,10 @@ def calibrate_threshold(
     det_head: nn.Module,
     device: torch.device,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> tuple[float, float]:
-    """val set으로 최적 detection threshold 탐색 후 threshold.json 저장.
+    """val_50_50으로 최적 detection threshold 탐색 후 threshold.json 저장.
 
     threshold는 val set에서만 결정 — test set 절대 사용 금지 (data leakage).
-
-    Args:
-        calib: 캘리브레이션 기준 분포 — "9_1" (실전) 또는 "50_50" (균형)
 
     Returns:
         (threshold, val_f1)  — sigmoid 확률 기준 threshold
@@ -118,7 +114,7 @@ def calibrate_threshold(
     downstream_dir = Path(cfg["downstream_dir"])
     det_cfg = cfg["detection"]
 
-    val_dir = downstream_dir / fold_name / f"val_{calib}"
+    val_dir = downstream_dir / fold_name / "val_50_50"
     ds_val = DownstreamFoldDataset(val_dir)
     val_loader = DataLoader(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
@@ -139,7 +135,7 @@ def calibrate_threshold(
 
     if verbose:
         print(
-            f"[threshold/{fold_name}] val_{calib} threshold={threshold:.4f}  "
+            f"[threshold/{fold_name}] val_50_50 threshold={threshold:.4f}  "
             f"val_f1={val_f1:.4f}  → saved: {thr_path}"
         )
     return threshold, val_f1
@@ -189,7 +185,6 @@ def evaluate_fold(
     encoder: nn.Module,
     device: torch.device,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> dict[str, Any]:
     """단일 fold의 detection + classification 평가.
 
@@ -209,13 +204,9 @@ def evaluate_fold(
     log_dir = Path(det_cfg.get("log_dir", "logs/transformer/downstream")) / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.eval_transformer.{fold_name}", log_file="eval.log")
 
-    # ── test set 로드 (항상 all_type — 두 view) ─────────────────────────
-    test_50_dir = downstream_dir / "all_type" / "test_50_50"
-    test_9_dir  = downstream_dir / "all_type" / "test_9_1"
-    ds_test_50 = DownstreamFoldDataset(test_50_dir)
-    ds_test_9  = DownstreamFoldDataset(test_9_dir)
+    # ── test set 로드 (항상 all_type) ─────────────────────────────────────
+    ds_test_50 = DownstreamFoldDataset(downstream_dir / "all_type" / "test_50_50")
     loader_50 = DataLoader(ds_test_50, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0)
-    loader_9  = DataLoader(ds_test_9,  batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0)
 
     # ── checkpoint 경로 ───────────────────────────────────────────────────
     det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
@@ -278,9 +269,9 @@ def evaluate_fold(
         eval_encoder = encoder
 
     # ── Detection 평가 ────────────────────────────────────────────────────
-    # threshold는 val_9_1(실전 분포)에서 F1-max sweep (calibrate_threshold 내부)
+    # threshold는 val_50_50에서 F1-max sweep (calibrate_threshold 내부)
     threshold, val_f1 = calibrate_threshold(
-        fold_name, cfg, eval_encoder, det_head, device, verbose=verbose, calib=calib
+        fold_name, cfg, eval_encoder, det_head, device, verbose=verbose
     )
 
     unseen_type = FOLD_UNSEEN_TYPE.get(fold_name)
@@ -328,17 +319,12 @@ def evaluate_fold(
         }
 
     logits_50, bl_50, tl_50 = _infer(eval_encoder, det_head, loader_50, device)
-    logits_9,  bl_9,  tl_9  = _infer(eval_encoder, det_head, loader_9,  device)
 
     det_metrics_50 = _run_det_eval(logits_50, bl_50, tl_50)
-    det_metrics_9  = _run_det_eval(logits_9,  bl_9,  tl_9)
-
-    # calib에 맞는 test view만 출력
-    dm_show    = det_metrics_50 if calib == "50_50" else det_metrics_9
-    label_show = "test_50_50 (native)" if calib == "50_50" else "test_9_1  (field)"
+    dm_show = det_metrics_50
     per_type_recall = dm_show["per_type_recall"]
 
-    logger.info(f"Detection [{label_show}]  threshold={threshold:.4f}  (val_f1={val_f1:.4f})")
+    logger.info(f"Detection [test_50_50]  threshold={threshold:.4f}  (val_f1={val_f1:.4f})")
     logger.info(
         f"  default(0.50):           acc={dm_show['default_thr']['accuracy']:.3f}  "
         f"prec={dm_show['default_thr']['precision']:.3f}  "
@@ -356,8 +342,7 @@ def evaluate_fold(
     for tn in [t for t in _TYPE_ORDER if t in per_type_recall]:
         mark = "  ◀ UNSEEN" if tn == unseen_type else ""
         logger.info(f"    {tn:20s} recall={per_type_recall[tn]:.3f}{mark}")
-    auc_key = "eval/auc_roc_50_50" if calib == "50_50" else "eval/auc_roc_9_1"
-    writer.add_scalar(auc_key, dm_show.get("auc_roc", float("nan")))
+    writer.add_scalar("eval/auc_roc_50_50", dm_show.get("auc_roc", float("nan")))
 
     # ── Classification 평가 (test_50_50 사용) ────────────────────────────
     known_type_names = set(class_names.values())
@@ -426,8 +411,7 @@ def evaluate_fold(
             )
 
     results = {
-        "detection_50_50": det_metrics_50,   # 50:50 balanced (native)
-        "detection_9_1":   det_metrics_9,    # 9:1 subsampled (field-representative)
+        "detection_50_50": det_metrics_50,
         "classification":  cls_metrics,
     }
 
@@ -435,7 +419,6 @@ def evaluate_fold(
     out_root = Path(cfg.get("output_dir", "outputs/transformer/downstream"))
     for task, metrics in [
         ("detector_50_50", det_metrics_50),
-        ("detector_9_1",   det_metrics_9),
         ("classifier",     cls_metrics),
     ]:
         out_dir = out_root / fold_name / task
@@ -564,7 +547,6 @@ def evaluate_all_folds(
     device: torch.device,
     folds: list[str] | None = None,
     verbose: bool = True,
-    calib: str = "9_1",
 ) -> dict[str, dict]:
     """지정된 fold 목록을 순차 평가. folds=None이면 ALL_FOLDS 전부."""
     targets = folds if folds is not None else ALL_FOLDS
@@ -572,5 +554,5 @@ def evaluate_all_folds(
     for fold in targets:
         if verbose:
             print(f"\n{'='*60}\n fold: {fold}\n{'='*60}")
-        results[fold] = evaluate_fold(fold, cfg, encoder, device, verbose=verbose, calib=calib)
+        results[fold] = evaluate_fold(fold, cfg, encoder, device, verbose=verbose)
     return results

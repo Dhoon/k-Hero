@@ -75,7 +75,7 @@ def main(config_path: str = "configs/data/attack_injection.yaml") -> None:
     print(
         f"[downstream] pretrain_dir : {pretrain_dir}\n"
         f"[downstream] output_dir   : {output_dir}\n"
-        f"[downstream] balance      : 50:50 (train/val_50_50/test_50_50) + 9:1 subsampled (val_9_1/test_9_1)\n"
+        f"[downstream] balance      : 50:50 (train/val_50_50/test_50_50)\n"
         f"[downstream] seed         : {cfg.get('seed', 42)}\n"
         f"[downstream] folds        : {len(cfg.get('folds', []))} defined"
     )

@@ -281,52 +281,6 @@ def _generate_attacks_only(
     return scaler.transform(X_atk_raw).astype(np.float32), tf_atk.astype(np.float32), type_lbls
 
 
-def _subsample_attacks(
-    X: np.ndarray,
-    tf: np.ndarray,
-    binary_label: np.ndarray,
-    type_label: np.ndarray,
-    normal_to_attack_ratio: float = 9.0,
-    seed: int = 0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Normal은 유지, attack만 stratified 다운샘플해 normal:attack ≈ ratio:1 맞춤.
-
-    Args:
-        normal_to_attack_ratio: 9.0 → 9:1 (공격이 전체의 ~10%)
-    """
-    rng             = np.random.default_rng(seed)
-    n_normal        = int((binary_label == 0).sum())
-    n_attack_target = max(1, round(n_normal / normal_to_attack_ratio))
-
-    attack_idx = np.where(binary_label == 1)[0]
-    if len(attack_idx) <= n_attack_target:
-        return X, tf, binary_label, type_label
-
-    attack_tl    = type_label[attack_idx]
-    unique_types = np.unique(attack_tl)
-    n_avail      = len(attack_idx)
-
-    selected: list[int] = []
-    remaining = n_attack_target
-    for i, t in enumerate(unique_types):
-        mask_t  = (attack_tl == t)
-        count_t = int(mask_t.sum())
-        if i == len(unique_types) - 1:
-            n_from_t = remaining
-        else:
-            prop_t   = count_t / n_avail
-            n_from_t = max(0, round(n_attack_target * prop_t))
-            remaining -= n_from_t
-        n_sel = min(n_from_t, count_t)
-        if n_sel > 0:
-            chosen = rng.choice(attack_idx[mask_t], size=n_sel, replace=False)
-            selected.extend(chosen.tolist())
-
-    normal_idx = np.where(binary_label == 0)[0]
-    keep = np.sort(np.concatenate([normal_idx, np.array(selected, dtype=np.int64)]))
-    return X[keep], tf[keep], binary_label[keep], type_label[keep]
-
-
 def _save_split_data(
     out_dir: Path,
     X: np.ndarray,
@@ -426,10 +380,8 @@ def generate_downstream_folds(
 
     split별 저장 구조::
         {output_dir}/{fold}/train/      — 50:50 (train은 하나만)
-        {output_dir}/{fold}/val_50_50/  — 50:50 native
-        {output_dir}/{fold}/val_9_1/    — 9:1  subsampled (실전 대표)
+        {output_dir}/{fold}/val_50_50/  — 50:50
         {output_dir}/{fold}/test_50_50/ — all_type 전용, 50:50
-        {output_dir}/{fold}/test_9_1/   — all_type 전용, 9:1
 
     attack base window는 동일 split의 normal pool에서만 추출
     (서로 다른 pretrain subdirectory → cross-split leakage 없음).
@@ -511,18 +463,8 @@ def generate_downstream_folds(
                 out_dir = output_dir / fold_name / "train"
                 fold_stats["train"] = _save_split_data(out_dir, X_f, tf_f, bl_f, tl_f)
             else:
-                # 50:50 native view
                 out_50 = output_dir / fold_name / f"{split}_50_50"
                 fold_stats[f"{split}_50_50"] = _save_split_data(out_50, X_f, tf_f, bl_f, tl_f)
-
-                # 9:1 subsampled view (attack만 다운샘플, normal 유지)
-                X_9, tf_9, bl_9, tl_9 = _subsample_attacks(
-                    X_f, tf_f, bl_f, tl_f,
-                    normal_to_attack_ratio=9.0,
-                    seed=base_seed + _split_seed_offset.get(split, 3) + 100,
-                )
-                out_9 = output_dir / fold_name / f"{split}_9_1"
-                fold_stats[f"{split}_9_1"] = _save_split_data(out_9, X_9, tf_9, bl_9, tl_9)
 
         stats[fold_name] = fold_stats
 

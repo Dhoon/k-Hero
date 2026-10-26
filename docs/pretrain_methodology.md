@@ -44,14 +44,9 @@ Replay는 값 자체가 실제 정상 데이터이기 때문에, window 하나�
 
 이 신호를 모델이 볼 수 있으려면 window가 replay 구간의 경계를 포함해야 한다. 즉 stride를 window 길이보다 작게 잡아 overlap을 주어서, 공격 구간에 완전히 갇힌 window뿐 아니라 경계를 걸친 window도 충분히 존재하도록 한다. training과 evaluation 양쪽 모두에 적용한다.
 
-### Val/Test 분포 변형
+### Val/Test 분포
 
-각 fold마다 두 가지 분포 버전을 생성한다.
-
-| 분할 | 비율 (Normal : Attack) | 용도 |
-|------|----------------------|------|
-| `val_50_50` / `test_50_50` | 1 : 1 균형 | 메인 threshold calibration 및 AUC-ROC 보고 |
-| `val_9_1` / `test_9_1` | 9 : 1 실전 | 참고용 |
+val/test는 Normal : Attack = 1 : 1 균형(`val_50_50` / `test_50_50`)으로만 생성한다. threshold calibration과 AUC-ROC 보고 모두 이 분포를 기준으로 한다.
 
 ---
 
@@ -220,8 +215,8 @@ python scripts/train_downstream_lstm_joint.py --fold all_type
 평가 시 동일한 `--loss_type`/`--encoder_mode`를 지정해야 올바른 checkpoint 경로를 찾는다.
 
 ```bash
-python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50
-python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50 \
+python scripts/evaluate_downstream_lstm.py --fold all_type
+python scripts/evaluate_downstream_lstm.py --fold all_type \
     --loss_type focal --encoder_mode freeze
 python scripts/evaluate_downstream_lstm_joint.py --fold all_type
 ```

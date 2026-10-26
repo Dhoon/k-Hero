@@ -28,14 +28,9 @@
 | Replay | 과거 실제 정상 구간을 그대로 복사해 재전송 (값 자체는 정상 데이터) |
 | Instant Spike | 1~2 timestep만 순간적으로 크게 튐 |
 
-### Val/Test 분포 변형
+### Val/Test 분포
 
-각 fold마다 두 가지 분포 버전을 생성합니다.
-
-| 분할 | 비율 (Normal : Attack) | 용도 |
-|------|----------------------|------|
-| `val_50_50` / `test_50_50` | 1 : 1 균형 | 메인 threshold calibration 및 AUC-ROC 보고 |
-| `val_9_1` / `test_9_1` | 9 : 1 실전 | 참고용 (현재 기본 평가는 50_50 기준) |
+val/test는 Normal : Attack = 1 : 1 균형(`val_50_50` / `test_50_50`)으로만 생성합니다. threshold calibration과 AUC-ROC 보고 모두 이 분포 기준입니다.
 
 ---
 
@@ -149,7 +144,7 @@ campus-power-ad/
 │       ├── pretrain/                          # 정상 데이터 (train/val/test)
 │       └── downstream/                        # fold별 데이터셋 (고정 시드, 1회 생성)
 │           ├── all_type/                      # Normal + 5종
-│           │   ├── train/  val_50_50/  val_9_1/  test_50_50/  test_9_1/
+│           │   ├── train/  val_50_50/  test_50_50/
 │           ├── unseen_scale_down/             # Normal + 4종 (train/val만)
 │           ├── unseen_ramp/
 │           ├── unseen_pulse_plateau/
@@ -183,11 +178,11 @@ campus-power-ad/
 │   ├── pretrain_lstm.py
 │   ├── pretrain_transformer.py
 │   ├── train_downstream_lstm.py               # --loss_type / --encoder_mode / --fold
-│   ├── evaluate_downstream_lstm.py            # --calib / --loss_type / --encoder_mode / --fold
+│   ├── evaluate_downstream_lstm.py            # --loss_type / --encoder_mode / --fold
 │   ├── train_downstream_lstm_joint.py         # --fold
 │   ├── evaluate_downstream_lstm_joint.py      # --fold
 │   ├── train_downstream_transformer.py        # --mode t1/t2 / --fold
-│   ├── evaluate_downstream_transformer.py     # --calib / --fold
+│   ├── evaluate_downstream_transformer.py     # --fold
 │   ├── infer.py
 │   └── analysis/                              # 일회성 진단·검증 (check_recon_error_auc, diagnose_*, verify_*)
 ├── tests/
@@ -207,7 +202,7 @@ campus-power-ad/
 │       └── downstream/{fold}/{detector,classifier}/
 ├── logs/                                          # TensorBoard 로그 (checkpoints와 동일 구조)
 ├── outputs/                                       # checkpoints와 동일 구조
-│   ├── lstm/{policy}/{fold}/                      # detector_50_50/ detector_9_1/ classifier/ metrics.json
+│   ├── lstm/{policy}/{fold}/                      # detector_50_50/ classifier/ metrics.json
 │   │                                              #   + per_type_recall.png
 │   └── transformer/
 │       ├── downstream/{fold}/
@@ -254,10 +249,10 @@ python scripts/train_downstream_lstm.py --fold all_type --loss_type focal --enco
 python scripts/train_downstream_lstm_joint.py --fold all_type
 
 # 5-A) Sequential 평가 (val_50_50 calibration, test_50_50 보고)
-python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50
+python scripts/evaluate_downstream_lstm.py --fold all_type
 
 # 5-A-alt) 다른 모드 평가
-python scripts/evaluate_downstream_lstm.py --fold all_type --calib 50_50 \
+python scripts/evaluate_downstream_lstm.py --fold all_type \
     --loss_type focal --encoder_mode freeze
 
 # 5-B) Joint 평가
@@ -288,14 +283,14 @@ python scripts/pretrain_transformer.py --config configs/transformer/pretrain.yam
 python scripts/train_downstream_transformer.py --fold all_type --mode t2
 
 # 5) 평가
-python scripts/evaluate_downstream_transformer.py --fold all_type --calib 50_50
+python scripts/evaluate_downstream_transformer.py --fold all_type
 ```
 
 ---
 
 ## 설계 원칙
 
-- **fold 구성**: `all_type`(5종 전부) + `unseen_{type}`(해당 공격 제외 4종) 각 5개 = 총 6 fold. test는 `all_type/test_{50_50|9_1}` 하나를 6 fold가 공유.
+- **fold 구성**: `all_type`(5종 전부) + `unseen_{type}`(해당 공격 제외 4종) 각 5개 = 총 6 fold. test는 `all_type/test_50_50` 하나를 6 fold가 공유.
 - **Sequential vs Joint**: Sequential은 Detection과 Classification의 최적 checkpoint 기준을 완전히 분리할 수 있고, Joint은 z space를 공유해 추론 비용을 절감하며 두 task가 상호 보완적으로 학습됩니다.
 - **encoder_mode=freeze 사용 시**: encoder는 pretrain 가중치 그대로 동결. bottleneck z의 의미론이 변하지 않으므로 `scripts/analysis/check_recon_error_auc.py` 같은 재구성 오류 기반 진단이 안정적.
 - **threshold calibration**: val_50_50 F1-max sweep으로 threshold를 결정하고 `threshold.json`에 저장. 평가 시 자동 로드.

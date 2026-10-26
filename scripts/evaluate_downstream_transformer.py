@@ -46,11 +46,10 @@ def _load_cfg(path: str | Path) -> dict:
 def main(
     config: str = "configs/transformer/downstream.yaml",
     fold: str | None = None,
-    calib: str = "9_1",
 ) -> None:
     cfg = _load_cfg(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[evaluate_downstream] device={device}  config={config}  calib=val_{calib}")
+    print(f"[evaluate_downstream] device={device}  config={config}")
 
     model_cfg = cfg["model"]
     encoder = TimeSeriesTransformerEncoder(
@@ -63,11 +62,11 @@ def main(
     encoder = load_encoder_frozen(cfg.get("pretrain_ckpt"), encoder).to(device)
 
     if fold is None or fold.lower() == "all":
-        evaluate_all_folds(cfg, encoder, device, calib=calib)
+        evaluate_all_folds(cfg, encoder, device)
     else:
         if fold not in ALL_FOLDS:
             raise ValueError(f"알 수 없는 fold: {fold!r}\n유효: {ALL_FOLDS}")
-        evaluate_fold(fold, cfg, encoder, device, calib=calib)
+        evaluate_fold(fold, cfg, encoder, device)
 
 
 if __name__ == "__main__":
@@ -80,9 +79,5 @@ if __name__ == "__main__":
         "--fold", default=None,
         help="평가할 fold 이름 (생략 or 'all'이면 전부)"
     )
-    parser.add_argument(
-        "--calib", default="9_1", choices=["9_1", "50_50"],
-        help="threshold 캘리브레이션 기준 분포 (default: 9_1)"
-    )
     args = parser.parse_args()
-    main(config=args.config, fold=args.fold, calib=args.calib)
+    main(config=args.config, fold=args.fold)
