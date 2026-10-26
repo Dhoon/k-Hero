@@ -12,7 +12,7 @@
     python scripts/train_downstream.py --fold all_type
 
     # config 지정
-    python scripts/train_downstream.py --config configs/downstream_transformer/default.yaml --fold all_type --mode t1
+    python scripts/train_downstream.py --config configs/transformer/downstream.yaml --fold all_type --mode t1
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _load_cfg(path: str | Path) -> dict:
 
 
 def main(
-    config: str = "configs/downstream_transformer/default.yaml",
+    config: str = "configs/transformer/downstream.yaml",
     fold: str | None = None,
     mode: str | None = None,
 ) -> None:
@@ -76,7 +76,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Downstream train")
     parser.add_argument(
-        "--config", default="configs/downstream_transformer/default.yaml",
+        "--config", default="configs/transformer/downstream.yaml",
         help="downstream config yaml 경로",
     )
     parser.add_argument(

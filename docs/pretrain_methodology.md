@@ -152,7 +152,7 @@ loss 함수 선택:
 
 val 기준: val_50_50 AUC-ROC 최고인 epoch → `best.pt` (encoder state_dict + det_head state_dict 함께 저장)
 
-checkpoint 경로: `checkpoints/downstream_lstm/{loss_type}_{encoder_mode}/{fold}/detector/best.pt`
+checkpoint 경로: `checkpoints/lstm/{loss_type}_{encoder_mode}/{fold}/detector/best.pt`
 
 **Phase 2 — Classification**
 
@@ -164,7 +164,7 @@ loss = CrossEntropy(cls_logit[attack_mask], y_type[attack_mask])   [attack 샘�
 ```
 
 val 기준: val_50_50 cls loss 최소.  
-checkpoint 경로: `checkpoints/downstream_lstm/{mode_tag}/{fold}/classifier/best.pt`
+checkpoint 경로: `checkpoints/lstm/{mode_tag}/{fold}/classifier/best.pt`
 
 Phase 2 encoder는 항상 Phase 1 best.pt에서 로드한다. Phase 1 `encoder_mode=unfreeze`여도 Phase 2는 encoder freeze다.
 
@@ -183,7 +183,7 @@ total_loss = w_det * det_loss + w_cls * cls_loss
 z 계산은 한 번, det_head와 cls_head가 같은 z를 소비한다.
 
 val 기준: val_50_50 Detection AUC-ROC 최고.  
-checkpoint: `checkpoints/downstream_lstm/joint/{fold}/best.pt` (encoder + det_head + cls_head 한 파일)
+checkpoint: `checkpoints/lstm/joint/{fold}/best.pt` (encoder + det_head + cls_head 한 파일)
 
 Sequential과 Joint의 비교:
 

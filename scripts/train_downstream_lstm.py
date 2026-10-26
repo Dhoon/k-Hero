@@ -14,7 +14,7 @@ from src.adt.engine.train_downstream_lstm import (
 
 
 def main(
-    config: str = "configs/downstream_lstm/default.yaml",
+    config: str = "configs/lstm/downstream.yaml",
     fold: str | None = None,
     loss_type: str | None = None,
     encoder_mode: str | None = None,
@@ -42,7 +42,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LSTM downstream training")
-    parser.add_argument("--config", default="configs/downstream_lstm/default.yaml")
+    parser.add_argument("--config", default="configs/lstm/downstream.yaml")
     parser.add_argument("--fold",   default=None, help="fold name or 'all'")
     parser.add_argument("--loss_type",    default=None, choices=["bce", "focal"])
     parser.add_argument("--encoder_mode", default=None, choices=["unfreeze", "freeze"])

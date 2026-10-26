@@ -4,7 +4,7 @@
   - threshold 탐색: val_50_50 F1-max sweep
   - Detection 보고: test_50_50 (default 0.5 + optimal threshold)
   - Classification: test_50_50, attack + known type만 대상
-  - checkpoint: checkpoints/downstream_lstm/joint/{fold}/best.pt
+  - checkpoint: checkpoints/lstm/joint/{fold}/best.pt
                 (encoder + det_head + cls_head 한 파일)
 """
 from __future__ import annotations
@@ -147,7 +147,7 @@ def evaluate_fold_lstm_joint(
     heads_cfg      = cfg["heads"]
     model_cfg      = cfg["model"]
 
-    log_dir = Path(train_cfg.get("log_dir", "logs/downstream_lstm_joint")) / fold_name
+    log_dir = Path(train_cfg.get("log_dir", "logs/lstm/joint")) / fold_name
     logger, writer = get_logger(
         log_dir, name=f"adt.eval_joint.{fold_name}", log_file="eval.log"
     )
@@ -364,7 +364,7 @@ def evaluate_fold_lstm_joint(
             )
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
-    out_root = Path(cfg.get("output_dir", "outputs/scores_lstm_joint"))
+    out_root = Path(cfg.get("output_dir", "outputs/lstm/joint"))
     for task, metrics in [
         ("detector_50_50", {**det_metrics, "n_params": n_params, "latency": latency}),
         ("classifier",     cls_metrics),
@@ -375,7 +375,7 @@ def evaluate_fold_lstm_joint(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    fig_dir = Path(cfg.get("figure_dir", "outputs/figures_lstm_joint")) / fold_name
+    fig_dir = Path(cfg.get("figure_dir", "outputs/lstm/joint")) / fold_name
     plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
 
     writer.close()

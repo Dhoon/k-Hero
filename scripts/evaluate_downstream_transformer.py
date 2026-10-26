@@ -9,7 +9,7 @@
     python scripts/evaluate_downstream.py --fold unseen_replay
 
     # config 지정
-    python scripts/evaluate_downstream.py --config configs/downstream_transformer/default.yaml
+    python scripts/evaluate_downstream.py --config configs/transformer/downstream.yaml
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def _load_cfg(path: str | Path) -> dict:
 
 
 def main(
-    config: str = "configs/downstream_transformer/default.yaml",
+    config: str = "configs/transformer/downstream.yaml",
     fold: str | None = None,
     calib: str = "9_1",
 ) -> None:
@@ -73,7 +73,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Downstream evaluate")
     parser.add_argument(
-        "--config", default="configs/downstream_transformer/default.yaml",
+        "--config", default="configs/transformer/downstream.yaml",
         help="downstream config yaml 경로"
     )
     parser.add_argument(

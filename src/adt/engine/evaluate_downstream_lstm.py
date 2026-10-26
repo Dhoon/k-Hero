@@ -152,6 +152,11 @@ def _measure_latency(
     return result
 
 
+def _mode_tag(det_cfg: dict) -> str:
+    """학습 정책 태그 — checkpoint / log / output 경로의 하위 디렉토리 이름."""
+    return f"{det_cfg.get('loss_type', 'bce')}_{det_cfg.get('encoder_mode', 'unfreeze')}"
+
+
 # ── Threshold calibration ────────────────────────────────────────────────────
 
 def _calibrate_threshold_lstm(
@@ -198,7 +203,7 @@ def _calibrate_threshold_lstm(
 
     threshold, val_f1 = find_best_threshold(probs, bl_np)
 
-    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / fold_name / "detector"
+    det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / _mode_tag(det_cfg) / fold_name / "detector"
     det_ckpt_dir.mkdir(parents=True, exist_ok=True)
     (det_ckpt_dir / "threshold.json").write_text(
         json.dumps({"threshold": threshold, "val_f1": val_f1}, indent=2),
@@ -231,7 +236,9 @@ def evaluate_fold_lstm(
     cls_cfg   = cfg["classification"]
     model_cfg = cfg["model"]
 
-    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_lstm")) / fold_name
+    mode_tag = _mode_tag(det_cfg)
+
+    log_dir = Path(det_cfg.get("log_dir", "logs/lstm")) / mode_tag / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.eval_lstm.{fold_name}", log_file="eval.log")
 
     data_cfg_path = Path(cfg.get("data_config", "configs/data/default.yaml"))
@@ -252,10 +259,6 @@ def evaluate_fold_lstm(
     loader_9 = DataLoader(
         ds_test_9, batch_size=det_cfg["batch_size"], shuffle=False, num_workers=0
     )
-
-    loss_type    = det_cfg.get("loss_type", "bce")
-    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
-    mode_tag     = f"{loss_type}_{encoder_mode}"
 
     det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / mode_tag / fold_name / "detector"
     cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / mode_tag / fold_name / "classifier"
@@ -482,20 +485,20 @@ def evaluate_fold_lstm(
             )
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
-    out_root = Path(cfg.get("output_dir", "outputs/scores_lstm"))
+    out_root = Path(cfg.get("output_dir", "outputs/lstm"))
     for task, metrics in [
         ("detector_50_50", {**det_metrics_50, "n_params": n_total, "latency": latency}),
         ("detector_9_1",   det_metrics_9),
         ("classifier",     cls_metrics),
     ]:
-        out_dir = out_root / fold_name / task
+        out_dir = out_root / mode_tag / fold_name / task
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     # ── Figure ────────────────────────────────────────────────────────────
-    fig_dir = Path(cfg.get("figure_dir", "outputs/figures_lstm")) / fold_name
+    fig_dir = Path(cfg.get("figure_dir", "outputs/lstm")) / mode_tag / fold_name
     plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
 
     writer.close()

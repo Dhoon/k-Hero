@@ -448,7 +448,7 @@ def train_fold(
     seed      = cfg.get("seed", 42)
     set_seed(seed)
 
-    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_transformer")) / fold_name
+    log_dir = Path(det_cfg.get("log_dir", "logs/transformer/downstream")) / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.downstream_transformer.{fold_name}")
 
     # ── 데이터 로드 ─────────────────────────────────────────────────────
@@ -503,7 +503,7 @@ def train_fold(
 
     if ft_cfg.get("enabled", False):
         # LN-only unfreeze: pretrain ckpt에서 재로드
-        pretrain_ckpt = cfg.get("pretrain_ckpt", "checkpoints/pretrain_transformer/best.pt")
+        pretrain_ckpt = cfg.get("pretrain_ckpt", "checkpoints/transformer/pretrain/best.pt")
         encoder, ln_params = load_encoder_for_finetune(
             pretrain_ckpt, encoder,
             mode=ft_cfg.get("mode", "layernorm_only"),

@@ -2,8 +2,8 @@
 
 Usage:
     python scripts/pretrain.py
-    python scripts/pretrain.py --config configs/pretrain_transformer/default.yaml
-    python scripts/pretrain.py --config configs/pretrain_transformer/default.yaml --max-epochs 2
+    python scripts/pretrain.py --config configs/transformer/pretrain.yaml
+    python scripts/pretrain.py --config configs/transformer/pretrain.yaml --max-epochs 2
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LP 전력 데이터 Self-supervised Pretraining")
     parser.add_argument(
         "--config",
-        default="configs/pretrain_transformer/default.yaml",
-        help="pretrain 설정 파일 (default: configs/pretrain_transformer/default.yaml)",
+        default="configs/transformer/pretrain.yaml",
+        help="pretrain 설정 파일 (default: configs/transformer/pretrain.yaml)",
     )
     parser.add_argument(
         "--max-epochs",

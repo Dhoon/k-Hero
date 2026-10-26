@@ -206,7 +206,7 @@ def evaluate_fold(
     cls_cfg = cfg["classification"]
     model_cfg = cfg["model"]
 
-    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_transformer")) / fold_name
+    log_dir = Path(det_cfg.get("log_dir", "logs/transformer/downstream")) / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.eval_transformer.{fold_name}", log_file="eval.log")
 
     # ── test set 로드 (항상 all_type — 두 view) ─────────────────────────
@@ -432,7 +432,7 @@ def evaluate_fold(
     }
 
     # ── 결과 저장 ─────────────────────────────────────────────────────────
-    out_root = Path(cfg.get("output_dir", "outputs/scores"))
+    out_root = Path(cfg.get("output_dir", "outputs/transformer/downstream"))
     for task, metrics in [
         ("detector_50_50", det_metrics_50),
         ("detector_9_1",   det_metrics_9),
@@ -445,7 +445,7 @@ def evaluate_fold(
         )
 
     # ── Figure (50:50 기준 per-type recall) ───────────────────────────────
-    fig_dir = Path(cfg.get("figure_dir", "outputs/figures")) / fold_name
+    fig_dir = Path(cfg.get("figure_dir", "outputs/transformer/downstream")) / fold_name
     plot_per_type_recall(fold_name, per_type_recall, fig_dir, unseen_type)
 
     writer.close()

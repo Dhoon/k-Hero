@@ -1,0 +1,36 @@
+seed: 42
+data_config: configs/data/default.yaml
+pretrain_ckpt: checkpoints/lstm/pretrain/best.pt
+downstream_dir: data/processed/downstream
+output_dir: outputs/lstm      # + /{loss_type}_{encoder_mode}/{fold}
+figure_dir: outputs/lstm
+
+model:
+  hidden_dim: 64
+  num_layers: 2
+
+detection:
+  hidden_dim: 32
+  dropout: 0.1
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 0
+  ckpt_dir: checkpoints/lstm
+  log_dir: logs/lstm
+  loss_type: "bce"        # "bce" | "focal"
+  focal_gamma: 2.0
+  focal_alpha: 0.5
+  encoder_mode: "unfreeze"  # "unfreeze" | "freeze"
+
+classification:
+  hidden_dim: 32
+  dropout: 0.1
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  epochs: 30
+  batch_size: 256
+  warmup_steps: 0
+  ckpt_dir: checkpoints/lstm
+  log_dir: logs/lstm

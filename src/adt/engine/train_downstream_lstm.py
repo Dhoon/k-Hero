@@ -141,7 +141,11 @@ def train_fold_lstm(
     seed      = cfg.get("seed", 42)
     set_seed(seed)
 
-    log_dir = Path(det_cfg.get("log_dir", "logs/downstream_lstm")) / fold_name
+    loss_type    = det_cfg.get("loss_type", "bce")
+    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
+    mode_tag = f"{loss_type}_{encoder_mode}"
+
+    log_dir = Path(det_cfg.get("log_dir", "logs/lstm")) / mode_tag / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.downstream_lstm.{fold_name}")
 
     data_cfg_path = Path(cfg.get("data_config", "configs/data/default.yaml"))
@@ -174,10 +178,6 @@ def train_fold_lstm(
         ds_val, batch_size=det_cfg["batch_size"], shuffle=False,
         num_workers=0, pin_memory=(device.type == "cuda"),
     )
-
-    loss_type    = det_cfg.get("loss_type", "bce")
-    encoder_mode = det_cfg.get("encoder_mode", "unfreeze")
-    mode_tag = f"{loss_type}_{encoder_mode}"
 
     det_ckpt_dir = Path(det_cfg["ckpt_dir"]) / mode_tag / fold_name / "detector"
     cls_ckpt_dir = Path(cls_cfg["ckpt_dir"]) / mode_tag / fold_name / "classifier"

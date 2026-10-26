@@ -77,7 +77,7 @@ Phase 1과 Phase 2가 독립적으로 실행되며 checkpoint가 분리됩니다
 | `--encoder_mode` | `unfreeze` (기본) | Phase 1에서 encoder 전체 학습 |
 |  | `freeze` | Phase 1에서 encoder 완전 동결 |
 
-checkpoint 경로: `checkpoints/downstream_lstm/{loss_type}_{encoder_mode}/{fold}/`
+checkpoint 경로: `checkpoints/lstm/{loss_type}_{encoder_mode}/{fold}/`
 
 **Joint Multi-task**
 
@@ -88,8 +88,8 @@ total_loss = w_det * BCE(det_logit, y_bin)
            + w_cls * CE(cls_logit[attack], y_type[attack])
 ```
 
-`w_det=1.0`, `w_cls=0.4`는 `configs/downstream_lstm_joint/default.yaml`에서 조정합니다.  
-checkpoint 경로: `checkpoints/downstream_lstm/joint/{fold}/best.pt`
+`w_det=1.0`, `w_cls=0.4`는 `configs/lstm/joint.yaml`에서 조정합니다.  
+checkpoint 경로: `checkpoints/lstm/joint/{fold}/best.pt`
 
 ---
 
@@ -131,14 +131,16 @@ Attack Detection head와 Classification head는 파라미터·loss·checkpoint�
 ```
 campus-power-ad/
 ├── configs/
-│   ├── data/default.yaml                      # 전처리·윈도잉 설정 (4채널)
-│   ├── pretrain_lstm/default.yaml             # LSTM AE pretrain 설정
-│   ├── pretrain_transformer/default.yaml      # Transformer SSL pretrain 설정
-│   ├── downstream_lstm/default.yaml           # LSTM Sequential downstream 설정
-│   ├── downstream_lstm_joint/default.yaml     # LSTM Joint downstream 설정
-│   └── downstream_transformer/
-│       ├── default.yaml                       # Transformer downstream 설정
-│       └── attack_injection.yaml              # 5종 공격 파라미터
+│   ├── data/
+│   │   ├── default.yaml                       # 전처리·윈도잉 설정 (4채널)
+│   │   └── attack_injection.yaml              # 5종 공격 파라미터 (downstream 데이터 생성)
+│   ├── lstm/
+│   │   ├── pretrain.yaml                      # LSTM AE pretrain
+│   │   ├── downstream.yaml                    # LSTM Sequential downstream
+│   │   └── joint.yaml                         # LSTM Joint downstream
+│   └── transformer/
+│       ├── pretrain.yaml                      # Transformer SSL pretrain
+│       └── downstream.yaml                    # Transformer downstream
 ├── data/
 │   ├── raw/                                   # 원본 xls (git 제외)
 │   ├── interim/                               # 중간 산출물 (git 제외)
@@ -186,27 +188,30 @@ campus-power-ad/
 │   ├── evaluate_downstream_lstm_joint.py      # --fold
 │   ├── train_downstream_transformer.py        # --mode t1/t2 / --fold
 │   ├── evaluate_downstream_transformer.py     # --calib / --fold
-│   ├── check_recon_error_auc.py               # recon error AUC 진단 스크립트
-│   └── infer.py
+│   ├── infer.py
+│   └── analysis/                              # 일회성 진단·검증 (check_recon_error_auc, diagnose_*, verify_*)
 ├── tests/
 │   ├── test_lstm.py, test_lstm_joint.py
 │   ├── test_models.py, test_engine.py
 │   ├── test_downstream.py, test_windowing.py
 │   ├── test_anomaly_injection.py, test_labeling.py
-├── checkpoints/
-│   ├── pretrain_lstm/best.pt
-│   ├── pretrain_transformer/best.pt
-│   └── downstream_lstm/
-│       ├── bce_unfreeze/{fold}/detector/best.pt   # encoder + det_head
-│       │                      /classifier/best.pt  # cls_head
-│       ├── bce_freeze/{fold}/...
-│       ├── focal_unfreeze/{fold}/...
-│       ├── focal_freeze/{fold}/...
-│       └── joint/{fold}/best.pt                   # encoder + det_head + cls_head
+├── checkpoints/                                 # {model}/{policy}/{fold}/...
+│   ├── lstm/
+│   │   ├── pretrain/best.pt
+│   │   ├── bce_unfreeze/{fold}/detector/best.pt   # encoder + det_head
+│   │   │                      /classifier/best.pt  # cls_head
+│   │   ├── focal_freeze/{fold}/...                 # (bce_freeze, focal_unfreeze 동일 구조)
+│   │   └── joint/{fold}/best.pt                    # encoder + det_head + cls_head
+│   └── transformer/
+│       ├── pretrain/best.pt
+│       └── downstream/{fold}/{detector,classifier}/
 ├── logs/                                          # TensorBoard 로그 (checkpoints와 동일 구조)
-├── outputs/
-│   ├── scores_lstm/     scores_lstm_joint/        # metrics.json
-│   └── figures_lstm/    figures_lstm_joint/        # per-type recall 차트
+├── outputs/                                       # checkpoints와 동일 구조
+│   ├── lstm/{policy}/{fold}/                      # detector_50_50/ detector_9_1/ classifier/ metrics.json
+│   │                                              #   + per_type_recall.png
+│   └── transformer/
+│       ├── downstream/{fold}/
+│       └── diagnostics/                           # diagnose_* 결과 텍스트
 └── docs/
     └── pretrain_methodology.md
 ```
@@ -216,7 +221,7 @@ campus-power-ad/
 ## 데이터 관리 정책
 
 - `data/raw/`, `data/interim/`, `data/processed/`의 실제 파일은 git에 올리지 않습니다 (`.gitignore`에서 제외, 폴더 구조 유지용 `.gitkeep`만 추적).
-- 체크포인트(`checkpoints/**/*.pt`)도 git에서 제외됩니다.
+- 체크포인트(`checkpoints/**/*.pt`)와 평가 결과(`outputs/`)는 git으로 추적합니다 (머신 간 공유용). TensorBoard 이벤트와 `*.log`는 제외됩니다.
 - 원본 xls는 로컬 또는 팀 공유 드라이브에만 보관하고, 새 컴퓨터에서 clone한 뒤 `data/raw/`에 원본 파일을 복사해 사용합니다.
 
 ---
@@ -237,7 +242,7 @@ python scripts/prepare_downstream_data.py
 
 ```bash
 # 3) LSTM AE pretrain
-python scripts/pretrain_lstm.py --config configs/pretrain_lstm/default.yaml
+python scripts/pretrain_lstm.py --config configs/lstm/pretrain.yaml
 
 # 4-A) Sequential downstream 학습 (all_type fold, bce_unfreeze 모드)
 python scripts/train_downstream_lstm.py --fold all_type
@@ -261,7 +266,7 @@ python scripts/evaluate_downstream_lstm_joint.py --fold all_type
 
 **checkpoint 경로 (Sequential)**
 ```
-checkpoints/downstream_lstm/
+checkpoints/lstm/
   bce_unfreeze/all_type/detector/best.pt    # encoder + det_head
                         /classifier/best.pt # cls_head
   focal_freeze/all_type/detector/best.pt
@@ -270,14 +275,14 @@ checkpoints/downstream_lstm/
 
 **checkpoint 경로 (Joint)**
 ```
-checkpoints/downstream_lstm/joint/all_type/best.pt  # encoder + det_head + cls_head
+checkpoints/lstm/joint/all_type/best.pt  # encoder + det_head + cls_head
 ```
 
 ### Transformer 파이프라인
 
 ```bash
 # 3) Transformer SSL pretrain (masked reconstruction + forecasting)
-python scripts/pretrain_transformer.py --config configs/pretrain_transformer/default.yaml
+python scripts/pretrain_transformer.py --config configs/transformer/pretrain.yaml
 
 # 4) Downstream 학습 (--mode t1 또는 t2)
 python scripts/train_downstream_transformer.py --fold all_type --mode t2
@@ -292,6 +297,6 @@ python scripts/evaluate_downstream_transformer.py --fold all_type --calib 50_50
 
 - **fold 구성**: `all_type`(5종 전부) + `unseen_{type}`(해당 공격 제외 4종) 각 5개 = 총 6 fold. test는 `all_type/test_{50_50|9_1}` 하나를 6 fold가 공유.
 - **Sequential vs Joint**: Sequential은 Detection과 Classification의 최적 checkpoint 기준을 완전히 분리할 수 있고, Joint은 z space를 공유해 추론 비용을 절감하며 두 task가 상호 보완적으로 학습됩니다.
-- **encoder_mode=freeze 사용 시**: encoder는 pretrain 가중치 그대로 동결. bottleneck z의 의미론이 변하지 않으므로 `check_recon_error_auc.py` 같은 재구성 오류 기반 진단이 안정적.
+- **encoder_mode=freeze 사용 시**: encoder는 pretrain 가중치 그대로 동결. bottleneck z의 의미론이 변하지 않으므로 `scripts/analysis/check_recon_error_auc.py` 같은 재구성 오류 기반 진단이 안정적.
 - **threshold calibration**: val_50_50 F1-max sweep으로 threshold를 결정하고 `threshold.json`에 저장. 평가 시 자동 로드.
 - **Replay 탐지**: 값 자체가 정상 데이터이므로 구간 경계를 포함하는 overlap window(stride < window 길이)가 필수.

@@ -1,4 +1,5 @@
 __pycache__/
+.pytest_cache/
 *.pyc
 .ipynb_checkpoints/
 .env
@@ -18,13 +19,7 @@ data/processed/**
 logs/**/*.tfevents.*
 logs/**/*.log
 
-# ── 출력물 (재현 가능, git 제외) ────────────────────────────────
-outputs/figures/**
-!outputs/figures/**/
-!outputs/figures/**/.gitkeep
-outputs/scores/**
-!outputs/scores/**/
-!outputs/scores/**/.gitkeep
+# ── 출력물: outputs/{model}/{policy}/{fold}/ 의 metrics.json·png는 git 추적 (결과 공유용)
 
 # ── archive: 코드/설정은 git 포함, 데이터·체크포인트는 제외 ────
 archive/data/**

@@ -5,7 +5,7 @@
   - loss = w_det * BCE(det_logit, y_bin)
           + w_cls * CE(cls_logit[attack], y_type[attack])
   - checkpoint 선택 기준: val_50_50 Detection AUC-ROC 최고
-  - 저장: checkpoints/downstream_lstm/joint/{fold}/best.pt
+  - 저장: checkpoints/lstm/joint/{fold}/best.pt
           (encoder + det_head + cls_head 한 파일)
 """
 from __future__ import annotations
@@ -112,7 +112,7 @@ def train_fold_lstm_joint(
     seed           = cfg.get("seed", 42)
     set_seed(seed)
 
-    log_dir = Path(train_cfg.get("log_dir", "logs/downstream_lstm_joint")) / fold_name
+    log_dir = Path(train_cfg.get("log_dir", "logs/lstm/joint")) / fold_name
     logger, writer = get_logger(log_dir, name=f"adt.joint.{fold_name}")
 
     data_cfg_path = Path(cfg.get("data_config", "configs/data/default.yaml"))
