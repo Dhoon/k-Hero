@@ -13,7 +13,7 @@
  *   --bench N     마지막 window 추론을 N회 반복해 평균 시간(ms) 출력
  *   --no-header   헤더 줄 생략
  *
- * 출력 (헤더 1줄 + window 당 한 줄, 탭 구분):
+ * 출력 (헤더 1줄 + window 당 한 줄, 공백 정렬 — 공백 기준으로 split 하면 됨):
  *   end_row  p_attack  is_attack  type  score_<유형> x5
  *   end_row 는 window 마지막 시점의 입력 행 번호(0-based, 데이터 행 기준).
  *   score_* 는 유형별 classification logit (is_attack=1 일 때만 의미 있음).
@@ -49,18 +49,37 @@ static double now_ms(void)
     return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
+/* 컬럼 폭: 헤더 이름과 값 중 긴 쪽. type 은 가장 긴 유형 이름 기준. */
+static int type_w(void)
+{
+    int w = (int)strlen("normal");
+    for (int k = 0; k < LJ_K; k++)
+        if ((int)strlen(LJ_CLASS_NAMES[k]) > w) w = (int)strlen(LJ_CLASS_NAMES[k]);
+    return w;
+}
+
+static int score_w(int k)
+{
+    int w = (int)strlen("score_") + (int)strlen(LJ_CLASS_NAMES[k]);
+    return w > 10 ? w : 10;
+}
+
 static void print_header(void)
 {
-    printf("end_row\tp_attack\tis_attack\ttype");
-    for (int k = 0; k < LJ_K; k++) printf("\tscore_%s", LJ_CLASS_NAMES[k]);
+    printf("%7s  %8s  %9s  %-*s", "end_row", "p_attack", "is_attack", type_w(), "type");
+    for (int k = 0; k < LJ_K; k++) {
+        char name[64];
+        snprintf(name, sizeof name, "score_%s", LJ_CLASS_NAMES[k]);
+        printf("  %*s", score_w(k), name);
+    }
     printf("\n");
 }
 
 static void print_result(long end_row, const lj_result *r)
 {
-    printf("%ld\t%.6f\t%d\t%s", end_row, r->p_attack, r->is_attack,
+    printf("%7ld  %8.6f  %9d  %-*s", end_row, r->p_attack, r->is_attack, type_w(),
            r->is_attack ? LJ_CLASS_NAMES[r->cls] : "normal");
-    for (int k = 0; k < LJ_K; k++) printf("\t%.6f", r->cls_logits[k]);
+    for (int k = 0; k < LJ_K; k++) printf("  %*.6f", score_w(k), r->cls_logits[k]);
     printf("\n");
 }
 
