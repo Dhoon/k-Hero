@@ -1,0 +1,112 @@
+{
+  "source_checkpoint": "checkpoints/lstm/joint/all_type/best.pt",
+  "epoch": 21,
+  "val_auc": 0.9028980782054374,
+  "input": {
+    "window_size": 96,
+    "n_features": 4,
+    "feature_cols": [
+      "수전_유효전력량",
+      "수전_지상무효전력량",
+      "수전_진상무효전력량",
+      "수전_피상전력량"
+    ],
+    "resample_freq": "15min"
+  },
+  "model": {
+    "type": "LSTMJoint",
+    "encoder": "BiLSTM",
+    "hidden_dim": 64,
+    "num_layers": 2,
+    "bottleneck_dim": 128,
+    "det_head_hidden": 32,
+    "cls_head_hidden": 32,
+    "num_classes": 5
+  },
+  "params": {
+    "encoder.lstm.weight_ih_l0": [
+      256,
+      4
+    ],
+    "encoder.lstm.weight_hh_l0": [
+      256,
+      64
+    ],
+    "encoder.lstm.bias_ih_l0": [
+      256
+    ],
+    "encoder.lstm.bias_hh_l0": [
+      256
+    ],
+    "encoder.lstm.weight_ih_l0_reverse": [
+      256,
+      4
+    ],
+    "encoder.lstm.weight_hh_l0_reverse": [
+      256,
+      64
+    ],
+    "encoder.lstm.bias_ih_l0_reverse": [
+      256
+    ],
+    "encoder.lstm.bias_hh_l0_reverse": [
+      256
+    ],
+    "encoder.lstm.weight_ih_l1": [
+      256,
+      128
+    ],
+    "encoder.lstm.weight_hh_l1": [
+      256,
+      64
+    ],
+    "encoder.lstm.bias_ih_l1": [
+      256
+    ],
+    "encoder.lstm.bias_hh_l1": [
+      256
+    ],
+    "encoder.lstm.weight_ih_l1_reverse": [
+      256,
+      128
+    ],
+    "encoder.lstm.weight_hh_l1_reverse": [
+      256,
+      64
+    ],
+    "encoder.lstm.bias_ih_l1_reverse": [
+      256
+    ],
+    "encoder.lstm.bias_hh_l1_reverse": [
+      256
+    ],
+    "det_head.net.0.weight": [
+      32,
+      128
+    ],
+    "det_head.net.0.bias": [
+      32
+    ],
+    "det_head.net.3.weight": [
+      1,
+      32
+    ],
+    "det_head.net.3.bias": [
+      1
+    ],
+    "cls_head.net.0.weight": [
+      32,
+      128
+    ],
+    "cls_head.net.0.bias": [
+      32
+    ],
+    "cls_head.net.3.weight": [
+      5,
+      32
+    ],
+    "cls_head.net.3.bias": [
+      5
+    ]
+  }
+}
