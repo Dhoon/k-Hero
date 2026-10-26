@@ -16,7 +16,55 @@ LSTM Joint 모델(이상 탐지 + 공격 유형 분류)의 배포용 weight와 �
 | `model/scaler.json` | 채널별 mean / std (train split으로 fit) |
 | `model/threshold.json` | detection threshold (sigmoid 확률 기준) |
 | `model/class_names.json` | classification 출력 index → 공격 유형 |
-| `reference/` | PyTorch 모델 정의 (C 구현 시 참조용) |
+| `reference/` | PyTorch 모델 정의 (검증·참조용) |
+| `c/` | 순수 C 추론 코드 (외부 의존성 없음, `model_weights.h`에 weight 내장) |
+| `tools/` | `export_c.py` (weight → C 헤더), `verify_c.py` (C ↔ PyTorch 일치 검증) — PC 전용 |
+| `examples/` | 정상 / 공격(scale_down) 샘플 입력 CSV |
+
+## 보드에서 실행 (Python 불필요)
+
+보드(AM43xx, armv7l)에 gcc·make가 있으므로 소스를 복사해서 보드에서 빌드한다.
+
+```bash
+# PC → 보드
+scp -r c examples khero:/home/root/lstm_joint/
+
+# 보드에서
+cd /home/root/lstm_joint/c
+make ARM=1                                   # 약 20초
+./lstm_joint ../examples/sample_attack.csv
+# 95  0.999987  1  scale_down  3.591340 3.415424 -0.206889 0.602079 -7.296520
+```
+
+출력(탭 구분): `window 마지막 행 번호  p_attack  is_attack  유형(정상이면 normal)  class logit ×5`
+
+| 옵션 | 설명 |
+|---|---|
+| (파일 생략) | stdin 에서 읽음 |
+| `--cumulative` | 입력이 적산값이면 diff(음수→0)로 구간 사용량 변환 (97행 이상 필요) |
+| `--all` | 모든 sliding window(stride 1) 결과 출력. 기본은 마지막 window 하나 |
+| `--bench N` | 추론 N회 평균 시간 (stderr) |
+
+입력 CSV: 한 줄 = 한 시점(15분 간격, 오래된 것 먼저), 각 줄의 **마지막 4개 필드**를 수전 4채널로 사용
+(앞에 시간 컬럼이 있어도 됨). 숫자가 아닌 줄(헤더)은 무시. 리샘플링·결측 보간은 하지 않으므로
+입력은 15분 간격으로 빠짐없이 들어와야 한다.
+
+성능 (보드, `make ARM=1`): window 당 약 140ms, 실행 파일 0.6MB, 추가 메모리 100KB 미만.
+
+C 라이브러리로 쓸 때는 `lstm_joint.h` 의 `lj_infer(x[96][4], &result)` 하나만 호출하면 된다
+(입력은 정규화 전 값, 내부에서 scaler 적용).
+
+## weight 갱신 시 (PC)
+
+```bash
+# model/ 의 파일을 새 checkpoint 기준으로 교체한 뒤
+python tools/export_c.py                          # c/model_weights.h 재생성
+gcc -O2 -std=gnu99 -o c/lstm_joint.exe c/main.c c/lstm_joint.c -lm
+python tools/verify_c.py --npy <main>/data/processed/downstream/all_type/test/X.npy -n 300
+# → PASS 확인 후 보드에 c/ 다시 복사
+```
+
+검증 결과 (현재 weight, test window 300개): p_attack 최대 오차 6e-6, 공격 판정·유형 argmax 불일치 0.
 
 ## 추론 절차
 
