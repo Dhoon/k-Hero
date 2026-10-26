@@ -33,8 +33,8 @@ scp -r c examples khero:/home/root/lstm_joint/
 cd /home/root/lstm_joint/c
 make ARM=1                                   # 약 20초
 ./lstm_joint ../examples/sample_attack.csv
-# end_row  p_attack  is_attack  type        score_scale_down  score_ramp  score_pulse_plateau  score_replay  score_instant_spike
-# 95       0.999987  1          scale_down  3.591340          3.415424    -0.206889            0.602079      -7.296520
+# end_row  p_attack  is_attack  type           score_scale_down  score_ramp  score_pulse_plateau  score_replay  score_instant_spike
+#      95  0.999987          1  scale_down             3.591340    3.415424            -0.206889      0.602079            -7.296520
 ```
 
 | 컬럼 | 의미 |
