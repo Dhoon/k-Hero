@@ -11,10 +11,12 @@
  *                 (첫 줄은 diff 기준으로만 쓰이므로 97줄 이상 필요)
  *   --all         모든 sliding window(stride 1) 결과 출력. 기본은 마지막 window만
  *   --bench N     마지막 window 추론을 N회 반복해 평균 시간(ms) 출력
+ *   --no-header   헤더 줄 생략
  *
- * 출력 (window 당 한 줄, 탭 구분):
- *   end_row  p_attack  is_attack  type  logit_0 ... logit_4
+ * 출력 (헤더 1줄 + window 당 한 줄, 탭 구분):
+ *   end_row  p_attack  is_attack  type  score_<유형> x5
  *   end_row 는 window 마지막 시점의 입력 행 번호(0-based, 데이터 행 기준).
+ *   score_* 는 유형별 classification logit (is_attack=1 일 때만 의미 있음).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +49,13 @@ static double now_ms(void)
     return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
+static void print_header(void)
+{
+    printf("end_row\tp_attack\tis_attack\ttype");
+    for (int k = 0; k < LJ_K; k++) printf("\tscore_%s", LJ_CLASS_NAMES[k]);
+    printf("\n");
+}
+
 static void print_result(long end_row, const lj_result *r)
 {
     printf("%ld\t%.6f\t%d\t%s", end_row, r->p_attack, r->is_attack,
@@ -57,11 +66,12 @@ static void print_result(long end_row, const lj_result *r)
 
 int main(int argc, char **argv)
 {
-    int cumulative = 0, all = 0, bench = 0;
+    int cumulative = 0, all = 0, bench = 0, header = 1;
     const char *path = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--cumulative")) cumulative = 1;
         else if (!strcmp(argv[i], "--all")) all = 1;
+        else if (!strcmp(argv[i], "--no-header")) header = 0;
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc) bench = atoi(argv[++i]);
         else if (argv[i][0] == '-') { fprintf(stderr, "unknown option: %s\n", argv[i]); return 2; }
         else path = argv[i];
@@ -98,6 +108,7 @@ int main(int argc, char **argv)
     }
 
     lj_result r;
+    if (header) print_header();
     size_t first = all ? 0 : n - LJ_T;
     for (size_t s = first; s + LJ_T <= n; s++) {
         lj_infer((const float (*)[LJ_C])rows[s], &r);

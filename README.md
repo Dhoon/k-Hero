@@ -33,10 +33,17 @@ scp -r c examples khero:/home/root/lstm_joint/
 cd /home/root/lstm_joint/c
 make ARM=1                                   # 약 20초
 ./lstm_joint ../examples/sample_attack.csv
-# 95  0.999987  1  scale_down  3.591340 3.415424 -0.206889 0.602079 -7.296520
+# end_row  p_attack  is_attack  type        score_scale_down  score_ramp  score_pulse_plateau  score_replay  score_instant_spike
+# 95       0.999987  1          scale_down  3.591340          3.415424    -0.206889            0.602079      -7.296520
 ```
 
-출력(탭 구분): `window 마지막 행 번호  p_attack  is_attack  유형(정상이면 normal)  class logit ×5`
+| 컬럼 | 의미 |
+|---|---|
+| `end_row` | 판정한 window(96행) 마지막 행 번호 (0부터, 헤더 제외) |
+| `p_attack` | 공격 확률. `threshold.json` 값(0.391)보다 크면 공격 |
+| `is_attack` | 1 = 공격, 0 = 정상 |
+| `type` | 공격 유형 (정상이면 `normal`) |
+| `score_*` | 유형별 점수 (logit). 공격일 때 가장 큰 값이 `type`. 정상이면 무시 |
 
 | 옵션 | 설명 |
 |---|---|
@@ -44,6 +51,7 @@ make ARM=1                                   # 약 20초
 | `--cumulative` | 입력이 적산값이면 diff(음수→0)로 구간 사용량 변환 (97행 이상 필요) |
 | `--all` | 모든 sliding window(stride 1) 결과 출력. 기본은 마지막 window 하나 |
 | `--bench N` | 추론 N회 평균 시간 (stderr) |
+| `--no-header` | 헤더 줄 생략 (다른 프로그램에서 파싱할 때) |
 
 입력 CSV: 한 줄 = 한 시점(15분 간격, 오래된 것 먼저), 각 줄의 **마지막 4개 필드**를 수전 4채널로 사용
 (앞에 시간 컬럼이 있어도 됨). 숫자가 아닌 줄(헤더)은 무시. 리샘플링·결측 보간은 하지 않으므로

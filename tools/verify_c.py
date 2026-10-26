@@ -43,7 +43,7 @@ def _run_c(exe: str, rows: np.ndarray, extra: list[str]) -> list[str]:
         for r in rows:
             f.write(",".join(f"{v:.9g}" for v in r) + "\n")
         path = f.name
-    out = subprocess.run([exe, *extra, path], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([exe, "--no-header", *extra, path], capture_output=True, text=True, check=True).stdout
     Path(path).unlink()
     return out.strip().split("\t")
 
