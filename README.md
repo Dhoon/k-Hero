@@ -58,6 +58,18 @@ end_row  p_attack  is_attack  type           score_scale_down  score_ramp  score
 
 정상 샘플은 공격 확률 6% → **정상**, 공격 샘플은 99.99% → **공격(scale_down)** 으로 판정한 결과입니다.
 
+### PC(Windows)에서 실행하기
+
+보드 없이 PC에서도 똑같이 돌려 볼 수 있습니다. gcc(MinGW)만 있으면 됩니다.
+
+```powershell
+cd c
+mingw32-make                          # 또는: gcc -O2 -std=gnu99 -o lstm_joint.exe main.c lstm_joint.c -lm
+.\lstm_joint.exe ..\examples\sample_normal.csv
+```
+
+실행 파일(`lstm_joint.exe`)은 git 에 올라가지 않으므로 처음 한 번은 직접 빌드해야 합니다. 결과는 보드와 같습니다.
+
 ---
 
 ## 2. 결과 읽는 법
