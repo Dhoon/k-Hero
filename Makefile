@@ -11,8 +11,12 @@ ifeq ($(ARM),1)
 CFLAGS += -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -ffast-math
 endif
 
-lstm_joint: main.c lstm_joint.c lstm_joint.h model_weights.h
-	$(CC) $(CFLAGS) -o $@ main.c lstm_joint.c $(LDLIBS)
+# 실행 파일은 이 폴더(프로젝트 최상위)에 생성:  ./lstm_joint examples/sample_normal.csv
+SRC = c/main.c c/lstm_joint.c
+DEP = $(SRC) c/lstm_joint.h c/model_weights.h
+
+lstm_joint: $(DEP)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 clean:
 	rm -f lstm_joint lstm_joint.exe

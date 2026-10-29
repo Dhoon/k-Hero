@@ -25,7 +25,7 @@ Python 없이 C로만 동작하도록 만들어서, 에지 단말(ARM 보드)에
 ```bash
 # 이 폴더(deploy 브랜치)에서 실행
 ssh -p 52022 root@<보드IP> "mkdir -p /home/root/lstm_joint"
-scp -P 52022 -r c examples root@<보드IP>:/home/root/lstm_joint/
+scp -P 52022 -r c examples Makefile root@<보드IP>:/home/root/lstm_joint/
 ```
 
 > 보드의 SSH가 오래된 방식만 지원하면 `ssh`/`scp` 에 `-o HostKeyAlgorithms=+ssh-rsa` 를 붙이세요.
@@ -33,17 +33,17 @@ scp -P 52022 -r c examples root@<보드IP>:/home/root/lstm_joint/
 **② 보드에서 빌드** (약 20초)
 
 ```bash
-cd /home/root/lstm_joint/c
+cd /home/root/lstm_joint
 make ARM=1
 ```
 
-`lstm_joint` 실행 파일이 생기면 성공입니다.
+같은 폴더에 `lstm_joint` 실행 파일이 생기면 성공입니다.
 
 **③ 샘플로 실행해 보기**
 
 ```bash
-./lstm_joint ../examples/sample_normal.csv
-./lstm_joint ../examples/sample_attack.csv
+./lstm_joint examples/sample_normal.csv
+./lstm_joint examples/sample_attack.csv
 ```
 
 아래처럼 나오면 정상 동작입니다.
@@ -63,12 +63,13 @@ end_row  p_attack  is_attack  type           score_scale_down  score_ramp  score
 보드 없이 PC에서도 똑같이 돌려 볼 수 있습니다. gcc(MinGW)만 있으면 됩니다.
 
 ```powershell
-cd c
-mingw32-make                          # 또는: gcc -O2 -std=gnu99 -o lstm_joint.exe main.c lstm_joint.c -lm
-.\lstm_joint.exe ..\examples\sample_normal.csv
+# 이 폴더(deploy 최상위)에서
+mingw32-make                          # 또는: gcc -O2 -std=gnu99 -o lstm_joint.exe c/main.c c/lstm_joint.c -lm
+.\lstm_joint.exe examples\sample_normal.csv
 ```
 
-실행 파일(`lstm_joint.exe`)은 git 에 올라가지 않으므로 처음 한 번은 직접 빌드해야 합니다. 결과는 보드와 같습니다.
+보드와 PC 모두 **최상위 폴더에서 빌드하고 실행**합니다 (실행 파일 이름만 `lstm_joint` / `lstm_joint.exe` 로 다름).
+실행 파일은 git 에 올라가지 않으므로 처음 한 번은 직접 빌드해야 합니다. 결과는 보드와 같습니다.
 
 ---
 
@@ -147,10 +148,10 @@ cat data.csv | ./lstm_joint              # 파일 대신 표준입력으로
 python tools/export_c.py
 
 # 3) PC에서 빌드 후 PyTorch 와 결과가 같은지 검증 → PASS 확인
-gcc -O2 -std=gnu99 -o c/lstm_joint.exe c/main.c c/lstm_joint.c -lm
+mingw32-make
 python tools/verify_c.py --npy <main 브랜치>/data/processed/downstream/all_type/test/X.npy -n 300
 
-# 4) 보드에 c/model_weights.h 를 다시 복사하고 보드에서 make ARM=1
+# 4) 보드에 c/model_weights.h 를 다시 복사하고 보드 최상위 폴더에서 make ARM=1
 ```
 
 | 바뀐 것 | C 코드 수정 |
@@ -178,11 +179,11 @@ python tools/verify_c.py --npy <main 브랜치>/data/processed/downstream/all_ty
 ## 6. 폴더 구성
 
 ```
-├── c/                    ← 보드에 올리는 것 (이것만 있으면 실행 가능)
+├── Makefile              빌드 (make / mingw32-make) → 이 폴더에 lstm_joint(.exe) 생성
+├── c/                    C 소스 — 보드에는 c/ + Makefile (+ examples/) 만 올리면 됨
 │   ├── main.c            CSV 읽기 + 결과 출력 (명령줄 프로그램)
 │   ├── lstm_joint.c/.h   추론 엔진
-│   ├── model_weights.h   weight 내장 헤더 (자동 생성, 직접 수정 금지)
-│   └── Makefile
+│   └── model_weights.h   weight 내장 헤더 (자동 생성, 직접 수정 금지)
 ├── examples/             정상 / 공격 샘플 CSV
 ├── model/                원본 weight 와 설정값 (PC 에서 헤더 만들 때 사용)
 │   ├── model.pt          PyTorch weight

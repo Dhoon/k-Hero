@@ -1,8 +1,8 @@
-"""C 구현(c/lstm_joint) 출력이 PyTorch 와 같은지 검증 (PC에서 실행, torch 필요).
+"""C 구현(lstm_joint) 출력이 PyTorch 와 같은지 검증 (PC에서 실행, torch 필요).
 
 사용법::
 
-    python tools/verify_c.py --exe c/lstm_joint.exe \
+    python tools/verify_c.py --exe lstm_joint.exe \
         --npy ../campus-power-ad/data/processed/downstream/all_type/test/X.npy -n 300
 
 --npy 는 정규화된 (N, T, C) window 배열 (main 브랜치 data/processed 산출물).
@@ -50,7 +50,7 @@ def _run_c(exe: str, rows: np.ndarray, extra: list[str]) -> list[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", default=str(ROOT / "c" / "lstm_joint.exe"))
+    ap.add_argument("--exe", default=str(ROOT / "lstm_joint.exe"))
     ap.add_argument("--npy", default=None)
     ap.add_argument("-n", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
